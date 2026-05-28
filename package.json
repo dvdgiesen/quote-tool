@@ -1,0 +1,39 @@
+{
+  "name": "quote-tool",
+  "version": "1.0.0",
+  "scripts": {
+    "ng": "ng",
+    "start": "ng serve quote-tool",
+    "build": "node build.js",
+    "watch": "ng build quote-tool --watch --configuration development",
+    "test": "ng test quote-tool",
+    "serve:ssr:quote-tool": "node dist/quote-tool/server/server.mjs"
+  },
+  "private": true,
+  "packageManager": "npm@11.12.1",
+  "dependencies": {
+    "@angular/build": "^21.2.8",
+    "@angular/cli": "^21.2.8",
+    "@angular/common": "^21.2.0",
+    "@angular/compiler": "^21.2.0",
+    "@angular/compiler-cli": "^21.2.0",
+    "@angular/core": "^21.2.0",
+    "@angular/forms": "^21.2.0",
+    "@angular/platform-browser": "^21.2.0",
+    "@angular/platform-server": "^21.2.0",
+    "@angular/router": "^21.2.0",
+    "@angular/ssr": "^21.2.8",
+    "@types/express": "^5.0.1",
+    "@types/node": "^22.0.0",
+    "express": "^5.1.0",
+    "firebase": "^12.12.1",
+    "rxjs": "~7.8.0",
+    "tslib": "^2.3.0",
+    "typescript": "~5.9.2"
+  },
+  "devDependencies": {
+    "jsdom": "^28.1.0",
+    "prettier": "^3.8.1",
+    "vitest": "^4.1.5"
+  }
+}

@@ -1,0 +1,32 @@
+# Firebase App Hosting configuration — Quote Tool (quote.watsturen.nl)
+# Docs: https://firebase.google.com/docs/app-hosting/configure
+
+runConfig:
+  runtime: nodejs22
+  concurrency: 80
+  cpu: 1
+  memoryMiB: 512
+  minInstances: 0
+  maxInstances: 10
+
+env:
+  - variable: NODE_ENV
+    value: production
+    availability:
+      - BUILD
+      - RUNTIME
+
+  # Selects which Angular project to build in this monorepo (see build.js)
+  - variable: ANGULAR_PROJECT
+    value: quote-tool
+    availability:
+      - BUILD
+
+  # Allows Angular SSR to accept requests from these hostnames
+  - variable: NG_ALLOWED_HOSTS
+    value: quote.watsturen.nl,quote-tool--watsturen-24f12.europe-west4.hosted.app
+    availability:
+      - RUNTIME
+
+  - variable: GEMINI_API_KEY
+    secret: GEMINI_API_KEY
