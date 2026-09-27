@@ -24,7 +24,7 @@ env:
 
   # Allows Angular SSR to accept requests from these hostnames
   - variable: NG_ALLOWED_HOSTS
-    value: quote.watsturen.nl,quote-tool--watsturen-24f12.europe-west4.hosted.app
+    value: quote.watsturen.nl,quote-tool--watsturen-24f12.europe-west4.hosted.app,quote-tool-622135956340.europe-west4.run.app
     availability:
       - RUNTIME
 

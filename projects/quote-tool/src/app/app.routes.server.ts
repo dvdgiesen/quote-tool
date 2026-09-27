@@ -12,6 +12,11 @@ export const serverRoutes: ServerRoute[] = [
     renderMode: RenderMode.Prerender,
   },
   {
+    // Auth action page — dynamic oobCode + mode query params, must be server-rendered on demand
+    path: 'auth/actie',
+    renderMode: RenderMode.Server,
+  },
+  {
     // Upload page — auth-guarded, must be server-rendered on demand
     path: 'upload',
     renderMode: RenderMode.Server,

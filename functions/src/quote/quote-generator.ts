@@ -22,6 +22,7 @@ export interface OfferteData {
 /**
  * Generates a full HTML offer document from extracted project data and price estimate.
  * The HTML is self-contained (inline CSS) and print-ready.
+ * Identical in structure and style to the Poder di Awa example offer.
  */
 export function generateOfferteHtml(data: OfferteData): string {
   const { extractedData: ex, priceEstimate: pe, quoteId, userName, generatedAt } = data;
@@ -451,9 +452,11 @@ export function generateOfferteHtml(data: OfferteData): string {
 
 <footer>
   <strong>Watsturen</strong> &nbsp;·&nbsp;
-  Vlissingen &nbsp;·&nbsp;
-  info@watsturen.nl &nbsp;·&nbsp;
-  watsturen.nl &nbsp;·&nbsp;
+  Boulevard Bankert 332, Vlissingen &nbsp;·&nbsp;
+  dvdgiesen@yahoo.com &nbsp;·&nbsp;
+  06 44533050 &nbsp;·&nbsp;
+  KvK: 81523114 &nbsp;·&nbsp;
+  BTW: NL003589587B28 &nbsp;·&nbsp;
   Offertenummer: ${offerteNr}
 </footer>
 

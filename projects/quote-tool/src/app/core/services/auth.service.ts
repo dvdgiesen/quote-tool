@@ -5,6 +5,9 @@ import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   sendEmailVerification,
+  sendPasswordResetEmail,
+  applyActionCode,
+  confirmPasswordReset,
   signOut,
   onAuthStateChanged,
   GoogleAuthProvider,
@@ -57,8 +60,9 @@ export class AuthService {
 
   /**
    * Create a new account with email and password, then send verification email.
-   * ActionCodeSettings.url is the "Continue" destination after Firebase verifies
-   * the email — brings the user back to the login page on our own domain.
+   * handleCodeInApp: true — the verification link lands directly on our own
+   * /auth/verify-email page (with oobCode as query param) instead of Firebase's
+   * generic confirmation page.
    */
   async signUpWithEmail(email: string, password: string): Promise<void> {
     const credential = await createUserWithEmailAndPassword(
@@ -67,8 +71,8 @@ export class AuthService {
       password
     );
     await sendEmailVerification(credential.user, {
-      url: 'https://quote.watsturen.nl/auth',
-      handleCodeInApp: false,
+      url: 'https://quote.watsturen.nl/auth/actie',
+      handleCodeInApp: true,
     });
   }
 
@@ -79,10 +83,36 @@ export class AuthService {
     const user = this.firebase.auth.currentUser;
     if (user && !user.emailVerified) {
       await sendEmailVerification(user, {
-        url: 'https://quote.watsturen.nl/auth',
-        handleCodeInApp: false,
+        url: 'https://quote.watsturen.nl/auth/actie',
+        handleCodeInApp: true,
       });
     }
+  }
+
+  /**
+   * Send a password reset email. The link in the email points to /auth/actie
+   * (via the Custom Action URL set in Firebase Console).
+   */
+  async sendPasswordResetEmail(email: string): Promise<void> {
+    await sendPasswordResetEmail(this.firebase.auth, email);
+  }
+
+  /**
+   * Apply an email verification or recoverEmail action code (oobCode from the link).
+   * Called by AuthActionComponent when the user lands on /auth/actie.
+   */
+  async applyEmailActionCode(oobCode: string): Promise<void> {
+    await applyActionCode(this.firebase.auth, oobCode);
+    // Reload user so isEmailVerified() reflects the new state immediately.
+    await this.reloadUser();
+  }
+
+  /**
+   * Confirm a password reset with the given oobCode and new password.
+   * Called by AuthActionComponent when mode=resetPassword.
+   */
+  async confirmPasswordReset(oobCode: string, newPassword: string): Promise<void> {
+    await confirmPasswordReset(this.firebase.auth, oobCode, newPassword);
   }
 
   /**

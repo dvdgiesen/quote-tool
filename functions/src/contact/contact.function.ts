@@ -1,5 +1,5 @@
 import { onRequest } from 'firebase-functions/v2/https';
-import * as admin from 'firebase-admin';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { sendContactNotification, sendContactConfirmation } from '../shared/email.service';
 
 // Disposable email domain blocklist
@@ -77,10 +77,10 @@ export const contact = onRequest(
 
     try {
       // Save to Firestore
-      const db = admin.firestore();
+      const db = getFirestore();
       await db.collection('contacts').add({
         ...payload,
-        submittedAt: admin.firestore.FieldValue.serverTimestamp(),
+        submittedAt: FieldValue.serverTimestamp(),
         ip: req.ip ?? null,
       });
 

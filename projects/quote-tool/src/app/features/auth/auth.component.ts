@@ -1,7 +1,7 @@
 import {
   Component, ChangeDetectionStrategy, inject, signal, effect
 } from '@angular/core';
-import { Router, RouterLink } from '@angular/router';
+import { Router } from '@angular/router';
 import { ReactiveFormsModule, FormBuilder, Validators, AbstractControl } from '@angular/forms';
 import { AuthService, AuthMode } from '../../core/services/auth.service';
 import { LogoLinkComponent } from '../../shared/logo/logo-link.component';
@@ -10,7 +10,7 @@ import { LogoLinkComponent } from '../../shared/logo/logo-link.component';
   selector: 'app-auth',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [ReactiveFormsModule, RouterLink, LogoLinkComponent],
+  imports: [ReactiveFormsModule, LogoLinkComponent],
   template: `
     <main class="auth">
       <div class="container container--xs">
@@ -21,9 +21,18 @@ import { LogoLinkComponent } from '../../shared/logo/logo-link.component';
         <!-- Stap indicator -->
         <span class="section-label">Stap 1 van 2</span>
 
+        <!-- Back link — commented out: no longer navigates anywhere meaningful
+        <a routerLink="/" class="auth__back">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M19 12H5M12 19l-7-7 7-7"/>
+          </svg>
+          Terug
+        </a>
+        -->
+
         <div class="auth__card card">
           <h1 class="auth__title">
-            @if (mode() === 'sign-in') { Welkom terug }
+            @if (mode() === 'sign-in') { Welkom }
             @else { Account aanmaken }
           </h1>
           <p class="auth__subtitle">
@@ -31,6 +40,20 @@ import { LogoLinkComponent } from '../../shared/logo/logo-link.component';
               Log in om de offerte tool te gebruiken.
             } @else {
               Maak een gratis account aan voor je directe prijsindicatie.
+            }
+          </p>
+          @if (mode() === 'sign-up') {
+            <p class="auth__spam-hint">Je ontvangt een verificatie-e-mail — controleer ook je spammap als je hem niet ziet.</p>
+          }
+
+          <!-- Toggle mode — shown directly under subtitle -->
+          <p class="auth__toggle auth__toggle--inline">
+            @if (mode() === 'sign-in') {
+              Nog geen account?
+              <button class="auth__toggle-btn" (click)="toggleMode()" type="button">Maak er een aan</button>
+            } @else {
+              Al een account?
+              <button class="auth__toggle-btn" (click)="toggleMode()" type="button">Inloggen</button>
             }
           </p>
 
@@ -44,6 +67,7 @@ import { LogoLinkComponent } from '../../shared/logo/logo-link.component';
               <div>
                 <strong>Controleer je inbox</strong>
                 <p>We hebben een verificatielink gestuurd naar <strong>{{ verificationEmail() }}</strong>. Klik op de link om je e-mailadres te bevestigen en log daarna in.</p>
+                <p class="auth__notice-spam">Niet in je inbox? Controleer ook je spammap.</p>
                 <button class="auth__resend-btn" (click)="resendVerification()" [disabled]="resendLoading()">
                   @if (resendLoading()) { Versturen... } @else { E-mail opnieuw versturen }
                 </button>
@@ -90,7 +114,16 @@ import { LogoLinkComponent } from '../../shared/logo/logo-link.component';
             </div>
 
             <div class="form-field" style="margin-top: var(--space-4);">
-              <label for="password" class="form-label">Wachtwoord</label>
+              <div class="auth__password-header">
+                <label for="password" class="form-label">Wachtwoord</label>
+                @if (mode() === 'sign-in') {
+                  <button
+                    type="button"
+                    class="auth__forgot-btn"
+                    (click)="showForgotPassword.set(true)"
+                  >Wachtwoord vergeten?</button>
+                }
+              </div>
               <input
                 id="password"
                 type="password"
@@ -107,6 +140,35 @@ import { LogoLinkComponent } from '../../shared/logo/logo-link.component';
                 </span>
               }
             </div>
+
+            <!-- Wachtwoord vergeten panel -->
+            @if (showForgotPassword() && mode() === 'sign-in') {
+              <div class="auth__notice auth__notice--info" style="margin-top: var(--space-4);">
+                @if (forgotPasswordSent()) {
+                  <svg class="auth__notice-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="2" y="4" width="20" height="16" rx="2"/>
+                    <path d="M2 7l10 7 10-7"/>
+                  </svg>
+                  <div>
+                    <strong>E-mail verstuurd</strong>
+                    <p>Controleer je inbox voor de link om je wachtwoord opnieuw in te stellen.</p>
+                  </div>
+                } @else {
+                  <div style="width: 100%;">
+                    <strong>Wachtwoord vergeten?</strong>
+                    <p>Vul je e-mailadres in en we sturen je een link om een nieuw wachtwoord in te stellen.</p>
+                    <button
+                      type="button"
+                      class="auth__resend-btn"
+                      (click)="sendForgotPassword()"
+                      [disabled]="forgotPasswordLoading()"
+                    >
+                      @if (forgotPasswordLoading()) { Versturen… } @else { Reset-link versturen }
+                    </button>
+                  </div>
+                }
+              </div>
+            }
 
             @if (error()) {
               <div class="auth__notice auth__notice--error" style="margin-top: var(--space-4);">
@@ -130,16 +192,6 @@ import { LogoLinkComponent } from '../../shared/logo/logo-link.component';
             </button>
           </form>
 
-          <!-- Toggle mode -->
-          <p class="auth__toggle">
-            @if (mode() === 'sign-in') {
-              Nog geen account?
-              <button class="auth__toggle-btn" (click)="toggleMode()" type="button">Maak er een aan</button>
-            } @else {
-              Al een account?
-              <button class="auth__toggle-btn" (click)="toggleMode()" type="button">Inloggen</button>
-            }
-          </p>
         </div>
 
       </div>
@@ -170,6 +222,23 @@ import { LogoLinkComponent } from '../../shared/logo/logo-link.component';
     }
 
     .auth__subtitle {
+      margin-bottom: var(--space-2);
+    }
+
+    .auth__spam-hint {
+      display: block;
+      margin-top: var(--space-1);
+      margin-bottom: var(--space-2);
+      font-size: var(--text-sm);
+      color: var(--color-text-muted);
+      max-width: none;
+    }
+
+    .auth__toggle {
+      font-size: var(--text-sm);
+      color: var(--color-text-muted);
+      max-width: none;
+      margin-top: 0;
       margin-bottom: var(--space-8);
     }
 
@@ -253,12 +322,22 @@ import { LogoLinkComponent } from '../../shared/logo/logo-link.component';
       to { transform: rotate(360deg); }
     }
 
-    .auth__toggle {
-      text-align: center;
-      margin-top: var(--space-6);
+    .auth__password-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      margin-bottom: var(--space-1);
+    }
+
+    .auth__forgot-btn {
+      color: var(--color-primary);
       font-size: var(--text-sm);
-      color: var(--color-text-muted);
-      max-width: none;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 0;
+
+      &:hover { text-decoration: underline; }
     }
 
     .auth__toggle-btn {
@@ -285,6 +364,9 @@ export class AuthComponent {
   readonly showVerificationNotice = signal(false);
   readonly verificationEmail = signal('');
   readonly resendLoading = signal(false);
+  readonly showForgotPassword = signal(false);
+  readonly forgotPasswordSent = signal(false);
+  readonly forgotPasswordLoading = signal(false);
 
   readonly form = this.fb.group({
     email:    ['', [Validators.required, Validators.email]],
@@ -368,6 +450,24 @@ export class AuthComponent {
       await this.authService.resendVerificationEmail();
     } finally {
       this.resendLoading.set(false);
+    }
+  }
+
+  async sendForgotPassword(): Promise<void> {
+    const email = this.form.get('email')?.value;
+    if (!email) {
+      this.form.get('email')?.markAsTouched();
+      return;
+    }
+    this.forgotPasswordLoading.set(true);
+    try {
+      await this.authService.sendPasswordResetEmail(email);
+      this.forgotPasswordSent.set(true);
+    } catch {
+      // Silently succeed even on error — avoids email enumeration.
+      this.forgotPasswordSent.set(true);
+    } finally {
+      this.forgotPasswordLoading.set(false);
     }
   }
 }

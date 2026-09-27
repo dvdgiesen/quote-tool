@@ -17,7 +17,13 @@ export const routes: Routes = [
     path: 'auth',
     loadComponent: () =>
       import('./features/auth/auth.component').then(m => m.AuthComponent),
-    title: 'Sign in — Quote Tool',
+    title: 'Inloggen — Quote Tool',
+  },
+  {
+    path: 'auth/actie',
+    loadComponent: () =>
+      import('./features/auth/auth-action.component').then(m => m.AuthActionComponent),
+    title: 'Account — Quote Tool',
   },
   {
     path: 'upload',

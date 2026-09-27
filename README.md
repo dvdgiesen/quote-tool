@@ -1,18 +1,18 @@
 # Quote Tool — watsturen.nl
 
-> An AI-powered instant quote generator built with Angular 19, Firebase, and Google Gemini.  
-> Live at **[quote.watsturen.nl](https://quote.watsturen.nl)**
+AI-powered instant quote generator for web development projects.
+Live at **[quote.watsturen.nl](https://quote.watsturen.nl)**
 
 ---
 
 ## What it does
 
-Upload a project brief (PDF, Word, or plain text) and receive a detailed price estimate within seconds. The tool uses Google Gemini to extract project details, classify complexity, and generate a formatted Dutch-language quote document — all without any manual input.
+Upload a project brief (PDF, Word, or plain text) and get a detailed price estimate in seconds. Google Gemini extracts project details, classifies complexity, and generates a formatted Dutch-language quote document — no manual input needed.
 
 **Flow:**
-1. Sign in (Google or email/password, with email verification)
+1. Sign in (Google or email/password, email verification required)
 2. Upload your project brief
-3. Receive a price range, hour estimate, feature breakdown, and a printable PDF quote
+3. Get a price range, hour estimate, phase breakdown, and downloadable HTML quote
 
 ---
 
@@ -20,15 +20,28 @@ Upload a project brief (PDF, Word, or plain text) and receive a detailed price e
 
 | Layer | Technology |
 |---|---|
-| Frontend | Angular 19 (standalone components, signals, SSR) |
-| Backend | Firebase Cloud Functions (Node 22, TypeScript) |
-| AI | Google Gemini 2.0 Flash via `@google/genai` |
+| Frontend | Angular 22 (standalone components, signals, SSR) |
+| Backend | Firebase Cloud Functions v2 (Node 22, TypeScript 6) |
+| AI | Google Gemini 2.5 Pro via `@google/generative-ai` |
 | Auth | Firebase Authentication (Google + email/password) |
-| Database | Firestore (quote storage, rate limiting) |
-| File storage | Firebase Storage |
+| Database | Firestore |
+| File storage | Firebase Storage (signed URLs, 30-day expiry) |
 | Email | Resend API |
 | Security | Firebase App Check (reCAPTCHA Enterprise) |
 | Hosting | Firebase App Hosting |
+| Testing | Vitest 5 + jsdom 30 |
+
+---
+
+## Angular patterns used
+
+- **Signals throughout** — `signal()`, `computed()`, `effect()` for all reactive state. No RxJS in components (except the auth guard's `toObservable()` for Firebase's async state).
+- **Standalone components** — no NgModules anywhere.
+- **New control flow** — `@if`, `@for`, `@switch` instead of structural directives.
+- **`@defer`** — lazy-loaded heavy components (result page, icon sets).
+- **Signal-based I/O** — `input()` and `output()` instead of `@Input()`/`@Output()` decorators.
+- **SSR with selective rendering** — landing and auth pages are prerendered (static), upload and result pages use server rendering (auth-gated).
+- **`inject()` function** — instead of constructor injection.
 
 ---
 
@@ -36,13 +49,13 @@ Upload a project brief (PDF, Word, or plain text) and receive a detailed price e
 
 ```
 quote-tool/
-├── projects/quote-tool/          # Angular 19 SSR app
+├── projects/quote-tool/          # Angular 22 SSR app
 │   └── src/app/
 │       ├── features/
 │       │   ├── landing/          # Public landing page
-│       │   ├── auth/             # Sign in / sign up
+│       │   ├── auth/             # Sign in / sign up / email action
 │       │   ├── upload/           # File upload + progress UI
-│       │   └── result/           # Quote result + print-to-PDF
+│       │   └── result/           # Quote result + download
 │       ├── core/
 │       │   ├── guards/           # Auth guard (waits for Firebase state)
 │       │   └── services/         # Firebase, Auth, Quote services
@@ -51,16 +64,31 @@ quote-tool/
 │           └── logo/             # Logo link component
 └── functions/src/
     ├── quote/
-    │   ├── quote.function.ts     # Cloud Function entry point
-    │   ├── extraction.ts         # Gemini document parsing
-    │   ├── pricing.ts            # Hour/price calculation logic
-    │   ├── moderation.ts         # Input validation
+    │   ├── quote.function.ts     # Cloud Function entry point (15-step pipeline)
+    │   ├── extraction.ts         # Gemini structured extraction
+    │   ├── pricing.ts            # Phase-based price calculation + AI-efficiency factor
+    │   ├── moderation.ts         # Pre-moderation check (cheap Gemini call)
     │   └── quote-generator.ts    # HTML quote document generator
     ├── contact/
     │   └── contact.function.ts   # Contact form Cloud Function
     └── shared/
-        └── email.service.ts      # Resend email service
+        └── email.service.ts      # Resend email service (lazy init)
 ```
+
+---
+
+## Pricing model
+
+The pricing engine applies a **GenAI-efficiency discount** to traditional hour estimates:
+
+| Complexity | Discount | Rationale |
+|---|---|---|
+| Simple | 50% | Standard patterns — AI writes 50%+ of the code |
+| Medium | 42% | Mix of standard and custom work |
+| Complex | 35% | More architecture decisions, less AI advantage |
+| Enterprise | 28% | High-level decisions dominate |
+
+This is a deliberate USP: lower prices for clients, and a concrete demonstration of GenAI value.
 
 ---
 
@@ -68,39 +96,35 @@ quote-tool/
 
 ### Firebase client config (`environment.ts`)
 
-The Firebase config values in `environment.ts` are **intentionally public** — this is by design and documented by Google:
+The Firebase config values are **intentionally public** — by design, per Google's documentation:
 
-> "It is okay to include your Firebase config object in your version control system, including your API key."  
+> "It is okay to include your Firebase config object in your version control system, including your API key."
 > — [Firebase documentation](https://firebase.google.com/docs/projects/api-keys)
 
 Security is enforced by:
 - **Firebase Security Rules** — Firestore and Storage rules restrict read/write access
-- **Firebase App Check** (reCAPTCHA Enterprise) — Cloud Functions reject requests without a valid App Check token
-- **Firebase Authentication** — users must be signed in and email-verified to call the quote function
+- **Firebase App Check** (reCAPTCHA Enterprise) — Cloud Functions reject requests without a valid token
+- **Firebase Authentication** — users must be signed in and email-verified
+- **Server-side rate limiting** — 1 quote/day, 3 failed attempts/day (Firestore counters)
 
 ### Actual secrets
 
-The real secrets (`GEMINI_API_KEY`, `RESEND_API_KEY`) live exclusively in **Firebase Secret Manager** and are never committed to source control. They are injected at runtime by Firebase App Hosting.
+`GEMINI_API_KEY` and `RESEND_API_KEY` live in **Firebase Secret Manager**, never committed to source control.
 
 ---
 
-## Key design decisions
+## Abuse prevention
 
-### Angular Signals throughout
-All reactive state uses Angular's built-in `signal()` and `computed()` — no RxJS observables in components (except where the router guard requires it).
-
-### Auth guard race condition fix
-The `authGuard` uses `toObservable(auth.loading)` to wait for Firebase's `onAuthStateChanged` to resolve before making an auth decision. Without this, the guard fires while `user` is still `null` and always redirects to `/auth`.
-
-### Progress bar on the submit button
-The upload button doubles as a progress indicator — a CSS custom property (`--progress`) drives a fill layer that grows from 0% to 100% as the Cloud Function processes the document. This avoids a separate loading spinner component.
-
-### Rate limiting
-Users are limited to one quote per 24 hours. The limit is enforced server-side in the Cloud Function (Firestore `lastQuoteAt` timestamp) and checked client-side on page load for a better UX.
-
-### SSR with selective rendering
-- Landing and auth pages: `RenderMode.Prerender` (static)
-- Upload and result pages: `RenderMode.Server` (auth-gated, dynamic)
+| Layer | Implementation |
+|---|---|
+| Auth + email verification | Firebase Auth, `emailVerified` check in Cloud Function |
+| 1 quote/day rate limit | `users/{uid}.lastQuoteAt` checked server-side |
+| 3 failed attempts/day | `users/{uid}.failedAttemptCount` — resets on successful quote |
+| File type + size validation | MIME type check + 5MB limit |
+| Min word count (30 words) | Blocks trivially short uploads before calling Gemini |
+| Pre-moderation | Cheap Gemini check before expensive extraction |
+| Disposable email blocklist | Checked in contact function |
+| Firebase App Check | reCAPTCHA Enterprise, `enforceAppCheck: true` |
 
 ---
 
@@ -112,25 +136,37 @@ npm install
 cd functions && npm install && cd ..
 
 # Start Angular dev server
-npm run dev:quote
+ng serve quote-tool
 
 # Start Firebase emulators (Functions + Firestore + Auth)
 firebase emulators:start
 ```
 
-> **Note:** You need your own Firebase project and API keys to run this locally.  
+> **Note:** You need your own Firebase project and API keys to run this locally.
 > Copy `projects/quote-tool/src/environments/environment.ts` and replace the values with your own Firebase config.
 
 ---
 
-## Built with Claude Sonnet 4.5
+## How this was built
 
-This project was built in collaboration with [Claude Sonnet 4.5](https://www.anthropic.com/claude) as a demonstration of AI-assisted full-stack development. The entire codebase — from the Angular components to the Cloud Functions and Gemini prompt engineering — was developed iteratively with Claude.
+This project was developed with AI-assisted coding using [Cline](https://github.com/cline/cline), an open-source AI coding agent, paired with various large language models (initially Claude Sonnet 4.5, later others).
+
+**What the AI does:**
+- Generates code following project conventions and Angular best practices
+- Handles refactoring (e.g., migrating `firebase-admin` v13 → v14, Angular 21 → 22)
+- Plans and executes dependency upgrades with compatibility checks
+- Writes and maintains documentation
+
+**What the human does:**
+- Architecture decisions and product direction
+- Code review before every commit
+- Deployment, domain configuration, Firebase console setup
+- Client communication and business logic validation
+
+The codebase is the result of iterative collaboration — the AI handles the implementation details while the human guides the architecture and validates the output.
 
 ---
 
 ## Live demo
 
 **[quote.watsturen.nl](https://quote.watsturen.nl)** — try it with a real project brief.
-
-Portfolio case study: **[watsturen.nl/projects/quote-tool](https://watsturen.nl/projects/quote-tool)**

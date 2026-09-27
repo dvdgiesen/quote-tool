@@ -89,7 +89,7 @@ export async function sendContactConfirmation(payload: ContactEmailPayload): Pro
       <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
         <h2 style="color: #1a1a2e;">Bericht ontvangen</h2>
         <p>Hoi ${escapeHtml(payload.name.split(' ')[0])},</p>
-        <p>Bedankt voor je bericht! Ik heb het ontvangen en neem binnen 24 uur contact met je op.</p>
+        <p>Bedankt voor je bericht! Ik heb het ontvangen en neem binnen 2 werkdagen contact met je op.</p>
         <blockquote style="border-left: 3px solid #6c63ff; padding-left: 16px; color: #555; margin: 16px 0;">
           <strong>${escapeHtml(payload.subject)}</strong><br/>
           <span style="white-space: pre-wrap;">${escapeHtml(payload.message)}</span>

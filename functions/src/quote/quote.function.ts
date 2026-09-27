@@ -1,5 +1,6 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
-import * as admin from 'firebase-admin';
+import { getFirestore, Timestamp, FieldValue } from 'firebase-admin/firestore';
+import { getStorage } from 'firebase-admin/storage';
 import { moderateContent } from './moderation';
 import { extractProjectData, extractProjectDataFromFile } from './extraction';
 import { calculatePrice } from './pricing';
@@ -102,8 +103,8 @@ export const generateQuote = onCall(
       );
     }
 
-    const db = admin.firestore();
-    const storage = admin.storage();
+    const db = getFirestore();
+    const storage = getStorage();
 
     // --- Rate limit checks (single Firestore read for both) ---
     const userRef = db.collection('users').doc(uid);
@@ -112,7 +113,7 @@ export const generateQuote = onCall(
 
     // 1. Successful quote rate limit (1 per 24h)
     if (userData?.['lastQuoteAt']) {
-      const lastQuoteAt = (userData['lastQuoteAt'] as admin.firestore.Timestamp).toDate();
+      const lastQuoteAt = (userData['lastQuoteAt'] as Timestamp).toDate();
       const hoursSinceLastQuote = (Date.now() - lastQuoteAt.getTime()) / (1000 * 60 * 60);
       if (hoursSinceLastQuote < RATE_LIMIT_HOURS) {
         const hoursRemaining = Math.ceil(RATE_LIMIT_HOURS - hoursSinceLastQuote);
@@ -127,7 +128,7 @@ export const generateQuote = onCall(
     // This prevents abuse via repeated uploads of non-brief documents that
     // pass file validation but burn Gemini quota during moderation.
     if (userData?.['lastFailedAttemptAt']) {
-      const lastFailedAt = (userData['lastFailedAttemptAt'] as admin.firestore.Timestamp).toDate();
+      const lastFailedAt = (userData['lastFailedAttemptAt'] as Timestamp).toDate();
       const hoursSinceLastFailed = (Date.now() - lastFailedAt.getTime()) / (1000 * 60 * 60);
       const failedCount = (userData['failedAttemptCount'] as number) ?? 0;
       if (hoursSinceLastFailed < RATE_LIMIT_HOURS && failedCount >= MAX_FAILED_ATTEMPTS) {
@@ -140,11 +141,13 @@ export const generateQuote = onCall(
     }
 
     // Helper: increment failed attempt counter and then throw the given error.
+    // Called whenever a content-related rejection occurs after resources have been consumed
+    // (i.e., after the word count check — at the point where Gemini would be called).
     const rejectWithFailedAttempt = async (message: string): Promise<never> => {
       await userRef.set(
         {
-          failedAttemptCount: admin.firestore.FieldValue.increment(1),
-          lastFailedAttemptAt: admin.firestore.FieldValue.serverTimestamp(),
+          failedAttemptCount: FieldValue.increment(1),
+          lastFailedAttemptAt: FieldValue.serverTimestamp(),
         },
         { merge: true }
       );
@@ -159,12 +162,16 @@ export const generateQuote = onCall(
       mimeType === 'application/msword';
 
     // --- Determine moderation text ---
+    // For DOCX: extract text with mammoth first so we can moderate the actual content.
+    // For TXT: use the file content directly.
+    // For PDF: use filename as hint (PDF content is moderated by Gemini during extraction).
     let moderationText: string;
     let preExtractedDocxText: string | undefined;
 
     if (mimeType === 'text/plain') {
       moderationText = fileBuffer.toString('utf-8');
     } else if (isDocx) {
+      // Import mammoth lazily to avoid issues if not installed
       const mammoth = await import('mammoth');
       const { value: docxText } = await mammoth.extractRawText({ buffer: fileBuffer });
       preExtractedDocxText = docxText;
@@ -187,6 +194,7 @@ export const generateQuote = onCall(
     const moderation = await moderateContent(moderationText.slice(0, 2000));
 
     if (moderation.result === 'blocked') {
+      // Count as a failed attempt — Gemini was called, quota was consumed
       await rejectWithFailedAttempt(
         'Je document lijkt geen projectbrief te zijn voor web- of app-ontwikkeling. Upload een document dat je software- of webontwikkelingsproject beschrijft.'
       );
@@ -211,6 +219,7 @@ export const generateQuote = onCall(
     if (mimeType === 'text/plain') {
       extractedData = await extractProjectData(fileBuffer.toString('utf-8'));
     } else if (isDocx && preExtractedDocxText) {
+      // Reuse already-extracted text — no need to run mammoth again
       extractedData = await extractProjectData(preExtractedDocxText);
     } else {
       const result = await extractProjectDataFromFile(fileBase64, mimeType, fileName);
@@ -241,6 +250,8 @@ export const generateQuote = onCall(
     });
 
     // --- Generate signed download URLs (valid 30 days) ---
+    // The App Engine default service account (which Cloud Functions v2 runs as) has
+    // the Service Account Token Creator role, granting it iam.serviceAccounts.signBlob.
     const signedUrlExpiry = Date.now() + 30 * 24 * 60 * 60 * 1000;
     const [[briefSignedUrl], [offerteSignedUrl]] = await Promise.all([
       bucket.file(briefStoragePath).getSignedUrl({ action: 'read', expires: signedUrlExpiry }),
@@ -253,7 +264,7 @@ export const generateQuote = onCall(
       userId: uid,
       userEmail,
       userName,
-      submittedAt: admin.firestore.FieldValue.serverTimestamp(),
+      submittedAt: FieldValue.serverTimestamp(),
       briefStoragePath,
       offerteStoragePath,
       offerteNr,
@@ -275,13 +286,13 @@ export const generateQuote = onCall(
 
     await db.collection('quotes').doc(quoteId).set(quoteData);
 
-    // --- Update user record ---
+    // --- Update user record: set lastQuoteAt and reset failed attempt counter ---
     await userRef.set(
       {
         email: userEmail,
         displayName: userName,
-        lastQuoteAt: admin.firestore.FieldValue.serverTimestamp(),
-        failedAttemptCount: 0,
+        lastQuoteAt: FieldValue.serverTimestamp(),
+        failedAttemptCount: 0, // reset on successful quote
       },
       { merge: true }
     );
