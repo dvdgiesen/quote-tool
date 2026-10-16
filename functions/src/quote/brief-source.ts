@@ -14,12 +14,10 @@ import type { Checked, ParsedQuoteRequest } from './brief-input';
  */
 export interface BriefSource {
   inputMode: 'text' | 'file';
-  /** Cleaned text for extraction. Absent for a PDF: Gemini reads the PDF itself. */
+  /** Cleaned text, moderated and extracted as text. Absent for a PDF: Gemini reads the PDF itself. */
   text?: string;
-  /** Re-encoded from the checked bytes (PDF only). */
+  /** Re-encoded from the checked bytes (PDF only). Moderated and extracted by Gemini as a document. */
   pdfBase64?: string;
-  /** What the cheap moderation reads. */
-  moderationText: string;
   /** What is saved in Storage: the typed text, or the original file. */
   storageBuffer: Buffer;
   contentType: string;
@@ -46,7 +44,6 @@ export async function readBriefSource(request: ParsedQuoteRequest): Promise<Chec
       value: {
         inputMode: 'text',
         text: prepared.value,
-        moderationText: prepared.value,
         storageBuffer: Buffer.from(prepared.value, 'utf-8'),
         contentType: 'text/plain; charset=utf-8',
         ext: 'txt',
@@ -68,8 +65,6 @@ export async function readBriefSource(request: ParsedQuoteRequest): Promise<Chec
       value: {
         inputMode: 'file',
         pdfBase64: buffer.toString('base64'),
-        // The PDF content itself is read by Gemini during extraction (see docs/tasks: PDF moderation)
-        moderationText: `File: ${displayName} (PDF document)`,
         storageBuffer: buffer,
         contentType: request.mimeType,
         ext,
@@ -97,7 +92,6 @@ export async function readBriefSource(request: ParsedQuoteRequest): Promise<Chec
     value: {
       inputMode: 'file',
       text: prepared.value,
-      moderationText: prepared.value,
       storageBuffer: buffer,
       contentType: request.mimeType,
       ext,

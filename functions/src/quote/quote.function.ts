@@ -1,7 +1,7 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, Timestamp, FieldValue } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
-import { moderateContent, ModerationUnreadableError } from './moderation';
+import { moderateContent, moderatePdf, ModerationUnreadableError } from './moderation';
 import type { ModerationResponse } from './moderation';
 import { extractProjectData, extractProjectDataFromPdf } from './extraction';
 import { hasUsableContent } from './sanitize-extracted';
@@ -162,10 +162,13 @@ export const generateQuote = onCall(
     let unfinishedFiles: string[] = [];
 
     try {
-      // --- Pre-moderation on the whole text. NOT fail-open: an error here means "try again later" ---
+      // --- Pre-moderation on the whole brief (text, or the content of a PDF). NOT fail-open:
+      // an error here means "try again later" ---
       let moderation: ModerationResponse;
       try {
-        moderation = await moderateContent(source.moderationText);
+        moderation = source.pdfBase64 !== undefined
+          ? await moderatePdf(source.pdfBase64)
+          : await moderateContent(source.text ?? '');
       } catch (err) {
         console.error(`Moderation failed (uid=${uid} mode=${source.inputMode}): ${describeError(err)}`);
         if (err instanceof ModerationUnreadableError) {

@@ -75,7 +75,7 @@ quote-tool/
     │   ├── brief-input.ts          # Request validation and text cleaning (pure functions)
     │   ├── brief-source.ts         # Turns text or a file into one internal shape
     │   ├── quote-limits.ts         # Per-user limits as a pure decision
-    │   ├── moderation.ts           # Pre-moderation of the whole text (Gemini Flash)
+    │   ├── moderation.ts           # Pre-moderation of the whole brief, text or PDF (Gemini Flash)
     │   ├── moderation-log.ts       # Log of blocked and flagged submissions (no text)
     │   ├── prompt-fence.ts         # Marks visitor text as data inside a prompt
     │   ├── extraction.ts           # Gemini structured extraction (Gemini Pro)
@@ -108,7 +108,7 @@ Every `*.spec.ts` sits next to the file it tests.
 3. **Limits**, read cheaply first (see *Abuse prevention*).
 4. **Read the brief**: real size and first bytes of a file, cleaning of the text, length and quality checks. Everything refused here is the visitor's to fix and costs nothing.
 5. **Claim a slot** in a Firestore transaction, so a second request from the same user is refused until the first is done.
-6. **Moderation** of the whole text with Gemini Flash. It does **not fail open**: when Gemini is down the visitor gets "temporarily unavailable" and can try again.
+6. **Moderation** of the whole brief with Gemini Flash. For typed text and Word/text files that is the cleaned text; for a PDF the document itself is sent to Flash, so its real content is judged and not its file name. It does **not fail open**: when Gemini is down the visitor gets "temporarily unavailable" and can try again.
 7. **Save the brief** in Storage (typed text as `brief.txt`).
 8. **Extraction** with Gemini Pro and a fixed JSON schema.
 9. **Validate the answer** of the model, field by field.
@@ -200,7 +200,7 @@ Security is enforced by:
 | Size and type | Real size measured on the decoded data (5 MB), first bytes checked against the claimed type, extension derived from the type, never from the file name |
 | Length | Typed text max 6000 characters, text from a file max 20,000 (characters counted as code points, after cleaning) |
 | Quality without Gemini | At least 30 words, 12 different words and 50% letters. Refusals cost nothing and do not count as an attempt |
-| Moderation | The whole text, not only the start. Fails closed |
+| Moderation | The whole text, or the whole content of a PDF, not only the start. Fails closed |
 | Output validation | `sanitize-extracted.ts` |
 | Firebase App Check | reCAPTCHA Enterprise, `enforceAppCheck: true` |
 
@@ -239,20 +239,12 @@ Never the text of a visitor, a file name or an error object (a JSON error quotes
 
 ```bash
 npm test                # Angular app (the counting and checking of the typed text, the app shell)
-npm run test:functions  # Cloud Functions: ~125 tests, no network and no Gemini calls
+npm run test:functions  # Cloud Functions: ~130 tests, no network and no Gemini calls
 ```
 
-The functions tests cover the pure logic: request validation, text cleaning, limits, prompt building, moderation parsing, output validation, retention rules, and that the HTML offer escapes every field.
+The functions tests cover the pure logic: request validation, text cleaning, limits, prompt building, moderation parsing (text and PDF), output validation, retention rules, and that the HTML offer escapes every field.
 
 Not covered by tests: the Firestore transaction, Storage, Auth, and the real Gemini calls. The pipeline was run against real briefs with a script that is not part of this repository.
-
----
-
-## Known limitations
-
-- The content of a **PDF** is not moderated by a separate step. Only its file name is. Gemini reads the PDF during extraction.
-- The offer is shown with `bypassSecurityTrustHtml`. Escaping is the only protection; a sandboxed `iframe` would add a second layer.
-- Disposable e-mail services are caught with a blocklist, which is never complete.
 
 ---
 
