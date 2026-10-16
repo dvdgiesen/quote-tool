@@ -1,0 +1,17 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /briefs/{userId}/{quoteId}/{fileName} {
+      // Only the user who uploaded the brief can read it
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow write: if false;
+    }
+
+    match /quotes/{quoteId}/{fileName} {
+      // Any authenticated user can read quote files
+      // (signed URLs bypass these rules, but this allows direct SDK access too)
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+  }
+}

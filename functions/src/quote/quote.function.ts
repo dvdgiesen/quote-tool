@@ -1,0 +1,380 @@
+import { onCall, HttpsError } from 'firebase-functions/v2/https';
+import { getFirestore, Timestamp, FieldValue } from 'firebase-admin/firestore';
+import { getStorage } from 'firebase-admin/storage';
+import { moderateContent } from './moderation';
+import { extractProjectData, extractProjectDataFromFile } from './extraction';
+import { calculatePrice, HOURLY_RATE } from './pricing';
+import { classifyGeminiError } from './gemini-retry';
+import { generateOfferteHtml } from './quote-generator';
+import { offerNumber } from '../shared/company';
+import {
+  sendQuoteNotification,
+  sendQuoteConfirmation,
+} from '../shared/email.service';
+
+const ALLOWED_MIME_TYPES = new Set([
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/msword',
+  'text/plain',
+]);
+
+const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB
+const RATE_LIMIT_HOURS = 24;
+const MIN_CONTENT_WORDS = 30; // Minimum words for a valid brief
+const MAX_FAILED_ATTEMPTS = 3; // Max invalid submissions per 24h before blocking
+
+export interface QuoteRequest {
+  fileName: string;
+  mimeType: string;
+  fileBase64: string; // base64-encoded file content
+  fileSize: number;
+}
+
+export interface QuoteResponse {
+  quoteId: string;
+  offerteNr: string;
+  projectTitle: string;
+  projectType: string;
+  complexity: string;
+  description: string;
+  targetAudience: string;
+  timeline: string;
+  features: string[];
+  technicalRequirements: string[];
+  /** Internal range the fixed price was derived from */
+  hoursMin: number;
+  hoursMax: number;
+  priceMin: number;
+  priceMax: number;
+  /** Fixed total price (sum of the fixed phase prices): what the client sees */
+  hoursFixed: number;
+  priceFixed: number;
+  currency: string;
+  hourlyRate: number;
+  // Full offer HTML for browser rendering
+  offerteHtml: string;
+  // Storage path of the saved HTML (for owner reference)
+  offerteStoragePath: string;
+  breakdown: {
+    baseHours: { min: number; max: number };
+    featureHours: { min: number; max: number };
+    matchedFeatures: string[];
+  };
+}
+
+export const generateQuote = onCall(
+  {
+    maxInstances: 5,
+    timeoutSeconds: 300,
+    memory: '512MiB',
+    enforceAppCheck: true,
+    secrets: ['GEMINI_API_KEY', 'RESEND_API_KEY'],
+  },
+  async (request): Promise<QuoteResponse> => {
+    // --- Auth check ---
+    if (!request.auth) {
+      throw new HttpsError('unauthenticated', 'Je moet ingelogd zijn om een offerte aan te vragen.');
+    }
+
+    const uid = request.auth.uid;
+    const userEmail = request.auth.token.email ?? '';
+    const userName = request.auth.token.name ?? userEmail.split('@')[0];
+    const emailVerified = request.auth.token.email_verified ?? false;
+
+    if (!emailVerified) {
+      throw new HttpsError(
+        'failed-precondition',
+        'Verifieer je e-mailadres voordat je een offerte aanvraagt.'
+      );
+    }
+
+    const { fileName, mimeType, fileBase64, fileSize } = request.data as QuoteRequest;
+
+    // --- File validation ---
+    if (!fileName || !mimeType || !fileBase64) {
+      throw new HttpsError('invalid-argument', 'Ontbrekende bestandsgegevens.');
+    }
+    if (!ALLOWED_MIME_TYPES.has(mimeType)) {
+      throw new HttpsError(
+        'invalid-argument',
+        'Ongeldig bestandstype. Upload een PDF, Word-document of tekstbestand.'
+      );
+    }
+    if (fileSize > MAX_FILE_SIZE_BYTES) {
+      throw new HttpsError(
+        'invalid-argument',
+        'Bestand is te groot. Maximale bestandsgrootte is 5 MB.'
+      );
+    }
+
+    const db = getFirestore();
+    const storage = getStorage();
+
+    // --- Rate limit checks (single Firestore read for both) ---
+    const userRef = db.collection('users').doc(uid);
+    const userDoc = await userRef.get();
+    const userData = userDoc.data();
+
+    // 1. Successful quote rate limit (1 per 24h)
+    if (userData?.['lastQuoteAt']) {
+      const lastQuoteAt = (userData['lastQuoteAt'] as Timestamp).toDate();
+      const hoursSinceLastQuote = (Date.now() - lastQuoteAt.getTime()) / (1000 * 60 * 60);
+      if (hoursSinceLastQuote < RATE_LIMIT_HOURS) {
+        const hoursRemaining = Math.ceil(RATE_LIMIT_HOURS - hoursSinceLastQuote);
+        throw new HttpsError(
+          'resource-exhausted',
+          `Je hebt vandaag al een offerte aangevraagd. Probeer het over ${hoursRemaining} uur opnieuw.`
+        );
+      }
+    }
+
+    // 2. Failed attempt rate limit (max 3 invalid submissions per 24h)
+    // This prevents abuse via repeated uploads of non-brief documents that
+    // pass file validation but burn Gemini quota during moderation.
+    if (userData?.['lastFailedAttemptAt']) {
+      const lastFailedAt = (userData['lastFailedAttemptAt'] as Timestamp).toDate();
+      const hoursSinceLastFailed = (Date.now() - lastFailedAt.getTime()) / (1000 * 60 * 60);
+      const failedCount = (userData['failedAttemptCount'] as number) ?? 0;
+      if (hoursSinceLastFailed < RATE_LIMIT_HOURS && failedCount >= MAX_FAILED_ATTEMPTS) {
+        const hoursRemaining = Math.ceil(RATE_LIMIT_HOURS - hoursSinceLastFailed);
+        throw new HttpsError(
+          'resource-exhausted',
+          `Te veel ongeldige inzendingen vandaag. Probeer het over ${hoursRemaining} uur opnieuw.`
+        );
+      }
+    }
+
+    // Helper: increment failed attempt counter and then throw the given error.
+    // Called whenever a content-related rejection occurs after resources have been consumed
+    // (i.e., after the word count check — at the point where Gemini would be called).
+    const rejectWithFailedAttempt = async (message: string): Promise<never> => {
+      await userRef.set(
+        {
+          failedAttemptCount: FieldValue.increment(1),
+          lastFailedAttemptAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+      throw new HttpsError('invalid-argument', message);
+    };
+
+    // --- Decode file ---
+    const fileBuffer = Buffer.from(fileBase64, 'base64');
+
+    const isDocx =
+      mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+      mimeType === 'application/msword';
+
+    // --- Determine moderation text ---
+    // For DOCX: extract text with mammoth first so we can moderate the actual content.
+    // For TXT: use the file content directly.
+    // For PDF: use filename as hint (PDF content is moderated by Gemini during extraction).
+    let moderationText: string;
+    let preExtractedDocxText: string | undefined;
+
+    if (mimeType === 'text/plain') {
+      moderationText = fileBuffer.toString('utf-8');
+    } else if (isDocx) {
+      // Import mammoth lazily to avoid issues if not installed
+      const mammoth = await import('mammoth');
+      const { value: docxText } = await mammoth.extractRawText({ buffer: fileBuffer });
+      preExtractedDocxText = docxText;
+      moderationText = docxText;
+    } else {
+      // PDF: use filename as hint — Gemini will validate content during extraction
+      moderationText = `File: ${fileName} (PDF document)`;
+    }
+
+    // --- Word count check (before moderation) ---
+    const wordCount = moderationText.trim().split(/\s+/).filter(w => w.length > 0).length;
+    if (wordCount < MIN_CONTENT_WORDS && mimeType !== 'application/pdf') {
+      throw new HttpsError(
+        'invalid-argument',
+        'Je document is te kort om een zinvolle offerte te genereren. Geef een uitgebreidere projectomschrijving (minimaal een paar alinea\'s).'
+      );
+    }
+
+    // --- Pre-moderation check ---
+    const moderation = await moderateContent(moderationText.slice(0, 2000));
+
+    if (moderation.result === 'blocked') {
+      // Count as a failed attempt — Gemini was called, quota was consumed
+      await rejectWithFailedAttempt(
+        'Je document lijkt geen projectbrief te zijn voor web- of app-ontwikkeling. Upload een document dat je software- of webontwikkelingsproject beschrijft.'
+      );
+    }
+
+    // --- Upload brief to Firebase Storage ---
+    const quoteId = db.collection('quotes').doc().id;
+    const ext = fileName.split('.').pop() ?? 'bin';
+    const briefStoragePath = `briefs/${uid}/${quoteId}/brief.${ext}`;
+    const bucket = storage.bucket();
+
+    await bucket.file(briefStoragePath).save(fileBuffer, {
+      metadata: {
+        contentType: mimeType,
+        metadata: { uploadedBy: uid, originalName: fileName, quoteId },
+      },
+    });
+
+    // --- Extract project data with Gemini ---
+    let extractedData;
+
+    try {
+      if (mimeType === 'text/plain') {
+        extractedData = await extractProjectData(fileBuffer.toString('utf-8'));
+      } else if (isDocx && preExtractedDocxText) {
+        // Reuse already-extracted text — no need to run mammoth again
+        extractedData = await extractProjectData(preExtractedDocxText);
+      } else {
+        const result = await extractProjectDataFromFile(fileBase64, mimeType, fileName);
+        extractedData = result.data;
+      }
+    } catch (err) {
+      // Retries are already done inside extraction. A failure here is on our side or Google's,
+      // NOT the user's: it must not count as a failed attempt, and lastQuoteAt is not set,
+      // so the user can simply try again.
+      const kind = classifyGeminiError(err);
+      console.error(`Gemini extraction failed (${kind}):`, err);
+
+      if (kind === 'billing' || kind === 'access') {
+        // Needs action from the owner (credits empty, key revoked, model gone): make it visible in the logs
+        console.error(`ACTION REQUIRED: Gemini ${kind} problem. Check billing / API key / model name in AI Studio.`);
+      }
+      if (kind === 'busy' || kind === 'billing' || kind === 'access') {
+        throw new HttpsError(
+          'unavailable',
+          'De offertetool is op dit moment tijdelijk niet beschikbaar. Probeer het over een paar minuten opnieuw, of neem direct contact op.'
+        );
+      }
+      throw err;
+    }
+
+    // --- Calculate price ---
+    const priceEstimate = calculatePrice(extractedData);
+
+    // --- Generate full HTML offer document ---
+    const generatedAt = new Date();
+    const offerteHtml = generateOfferteHtml({
+      quoteId,
+      extractedData,
+      priceEstimate,
+      userName,
+      userEmail,
+      generatedAt,
+    });
+
+    // --- Save HTML offer to Firebase Storage ---
+    const offerteStoragePath = `quotes/${quoteId}/offerte.html`;
+    await bucket.file(offerteStoragePath).save(Buffer.from(offerteHtml, 'utf-8'), {
+      metadata: {
+        contentType: 'text/html; charset=utf-8',
+        metadata: { quoteId, generatedFor: userEmail, generatedAt: generatedAt.toISOString() },
+      },
+    });
+
+    // --- Generate signed download URLs (valid 30 days) ---
+    // The App Engine default service account (which Cloud Functions v2 runs as) has
+    // the Service Account Token Creator role, granting it iam.serviceAccounts.signBlob.
+    const signedUrlExpiry = Date.now() + 30 * 24 * 60 * 60 * 1000;
+    const [[briefSignedUrl], [offerteSignedUrl]] = await Promise.all([
+      bucket.file(briefStoragePath).getSignedUrl({ action: 'read', expires: signedUrlExpiry }),
+      bucket.file(offerteStoragePath).getSignedUrl({ action: 'read', expires: signedUrlExpiry }),
+    ]);
+
+    // --- Save quote to Firestore ---
+    const offerteNr = offerNumber(quoteId);
+    const quoteData = {
+      userId: uid,
+      userEmail,
+      userName,
+      submittedAt: FieldValue.serverTimestamp(),
+      briefStoragePath,
+      offerteStoragePath,
+      offerteNr,
+      fileName,
+      extractedData,
+      priceRange: {
+        min: priceEstimate.priceMin,
+        max: priceEstimate.priceMax,
+        currency: 'EUR',
+        hoursMin: priceEstimate.hoursMin,
+        hoursMax: priceEstimate.hoursMax,
+        fixed: priceEstimate.priceFixed,
+        hoursFixed: priceEstimate.hoursFixed,
+      },
+      phaseBreakdowns: priceEstimate.phaseBreakdowns,
+      paymentSchedule: priceEstimate.paymentSchedule,
+      breakdown: priceEstimate.breakdown,
+      status: 'pending',
+      moderationResult: moderation.result,
+    };
+
+    await db.collection('quotes').doc(quoteId).set(quoteData);
+
+    // --- Update user record: set lastQuoteAt and reset failed attempt counter ---
+    await userRef.set(
+      {
+        email: userEmail,
+        displayName: userName,
+        lastQuoteAt: FieldValue.serverTimestamp(),
+        failedAttemptCount: 0, // reset on successful quote
+      },
+      { merge: true }
+    );
+
+    // --- Send notification emails (fire-and-forget) ---
+    const emailPayload = {
+      userName,
+      userEmail,
+      quoteId,
+      offerteNr,
+      projectTitle: extractedData.projectTitle,
+      projectType: extractedData.projectType,
+      complexity: priceEstimate.complexity,
+      priceMin: priceEstimate.priceMin,
+      priceMax: priceEstimate.priceMax,
+      hoursMin: priceEstimate.hoursMin,
+      hoursMax: priceEstimate.hoursMax,
+      priceFixed: priceEstimate.priceFixed,
+      hoursFixed: priceEstimate.hoursFixed,
+      features: extractedData.features,
+      briefStoragePath,
+      offerteStoragePath,
+      offerteHtml,
+      briefSignedUrl,
+      offerteSignedUrl,
+    };
+
+    Promise.all([
+      sendQuoteNotification(emailPayload),
+      sendQuoteConfirmation(emailPayload),
+    ]).catch(err => console.error('Email sending failed:', err));
+
+    // --- Return quote to client ---
+    return {
+      quoteId,
+      offerteNr,
+      projectTitle: extractedData.projectTitle,
+      projectType: extractedData.projectType,
+      complexity: priceEstimate.complexity,
+      description: extractedData.description,
+      targetAudience: extractedData.targetAudience,
+      timeline: extractedData.timeline,
+      features: extractedData.features,
+      technicalRequirements: extractedData.technicalRequirements,
+      hoursMin: priceEstimate.hoursMin,
+      hoursMax: priceEstimate.hoursMax,
+      priceMin: priceEstimate.priceMin,
+      priceMax: priceEstimate.priceMax,
+      hoursFixed: priceEstimate.hoursFixed,
+      priceFixed: priceEstimate.priceFixed,
+      currency: 'EUR',
+      hourlyRate: HOURLY_RATE,
+      offerteHtml,
+      offerteStoragePath,
+      breakdown: priceEstimate.breakdown,
+    };
+  }
+);

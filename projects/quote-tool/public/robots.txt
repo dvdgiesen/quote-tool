@@ -1,0 +1,7 @@
+# The quote tool sits behind a login and is not meant to show up in search results.
+# Crawling stays allowed on purpose: search engines must be able to read the
+# "X-Robots-Tag: noindex" header that server.ts sends on every response.
+# (A "Disallow" would hide that header, and the bare URL could still be listed.)
+# People find the tool via watsturen.nl, which has the explanation, examples and the link.
+User-agent: *
+Allow: /
