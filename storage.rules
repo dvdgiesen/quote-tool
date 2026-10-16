@@ -2,15 +2,16 @@ rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
     match /briefs/{userId}/{quoteId}/{fileName} {
-      // Only the user who uploaded the brief can read it
+      // Only the user who sent the brief can read it
       allow read: if request.auth != null && request.auth.uid == userId;
       allow write: if false;
     }
 
     match /quotes/{quoteId}/{fileName} {
-      // Any authenticated user can read quote files
-      // (signed URLs bypass these rules, but this allows direct SDK access too)
-      allow read: if request.auth != null;
+      // Nobody reads these through the SDK: the website gets the offer in the function response and
+      // the owner and client get signed URLs by e-mail (signed URLs ignore these rules).
+      // The offer holds a name and an e-mail address, so no blanket read for every signed-in user.
+      allow read: if false;
       allow write: if false;
     }
   }

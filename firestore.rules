@@ -6,9 +6,17 @@ service cloud.firestore {
       allow write: if false;
     }
     match /users/{userId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+      // Read-only for the owner. The limits (lastQuoteAt, failedAttemptCount, attemptCount,
+      // inFlightUntil) live here and are only written by the Cloud Function (Admin SDK, which
+      // ignores these rules). A writable document would let a visitor reset their own limits.
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow write: if false;
     }
     match /contacts/{contactId} {
+      allow read, write: if false;
+    }
+    match /moderationLog/{entryId} {
+      // Only readable in the Firebase console
       allow read, write: if false;
     }
   }

@@ -33,7 +33,7 @@ interface Expectation {
             <span class="text-gradient">prijsindicatie</span>
           </h1>
           <p class="landing__subtitle">
-            Upload je projectbrief en ontvang binnen enkele seconden een GenAI-gegenereerde prijsindicatie.
+            Beschrijf je project en ontvang binnen enkele seconden een GenAI-gegenereerde prijsindicatie.
             Geen wachten, geen heen-en-weer — gewoon een direct startpunt voor ons gesprek.
           </p>
           <a routerLink="/auth" class="btn btn--primary landing__cta">
@@ -99,7 +99,7 @@ interface Expectation {
           </div>
           <div class="landing__final-cta">
             <a routerLink="/auth" class="btn btn--primary">
-              Upload je Project
+              Start je aanvraag
             </a>
             <a href="https://watsturen.nl/contact" class="btn btn--outline" target="_blank" rel="noopener noreferrer">
               Neem direct contact op
@@ -267,8 +267,8 @@ export class LandingComponent {
     },
     {
       number: '02',
-      title: 'Upload je project',
-      description: 'Upload een PDF of Word-document met een beschrijving van je project — functies, doelen, tijdlijn en eventuele technische vereisten.',
+      title: 'Beschrijf je project',
+      description: 'Typ of plak een beschrijving van je project, of upload een PDF of Word-document — functies, doelen, tijdlijn en eventuele technische vereisten.',
     },
     {
       number: '03',

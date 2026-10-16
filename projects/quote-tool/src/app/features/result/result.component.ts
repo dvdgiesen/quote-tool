@@ -92,7 +92,7 @@ import { LogoLinkComponent } from '../../shared/logo/logo-link.component';
         } @else {
           <div class="result__empty">
             <p>Geen offertedata gevonden.</p>
-            <a routerLink="/upload" class="btn btn--primary">Brief uploaden</a>
+            <a routerLink="/upload" class="btn btn--primary">Nieuwe aanvraag</a>
           </div>
         }
 

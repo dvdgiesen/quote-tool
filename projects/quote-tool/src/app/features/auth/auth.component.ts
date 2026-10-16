@@ -5,6 +5,7 @@ import { Router } from '@angular/router';
 import { ReactiveFormsModule, FormBuilder, Validators, AbstractControl } from '@angular/forms';
 import { AuthService, AuthMode } from '../../core/services/auth.service';
 import { LogoLinkComponent } from '../../shared/logo/logo-link.component';
+import { PRIVACY_URL } from '../../shared/links';
 
 @Component({
   selector: 'app-auth',
@@ -194,6 +195,11 @@ import { LogoLinkComponent } from '../../shared/logo/logo-link.component';
 
         </div>
 
+        <!-- One place for the privacy statement: below the card, outside it -->
+        <p class="auth__privacy">
+          <a [href]="privacyUrl" target="_blank" rel="noopener noreferrer">Privacy: wat we bewaren en hoe lang</a>
+        </p>
+
       </div>
     </main>
   `,
@@ -223,6 +229,16 @@ import { LogoLinkComponent } from '../../shared/logo/logo-link.component';
 
     .auth__subtitle {
       margin-bottom: var(--space-2);
+    }
+
+    .auth__privacy {
+      margin: var(--space-4) 0 0;
+      text-align: center;
+      font-size: var(--text-sm);
+      max-width: none;
+
+      a { color: var(--color-text-subtle); text-decoration: underline; }
+      a:hover { color: var(--color-primary); }
     }
 
     .auth__spam-hint {
@@ -354,6 +370,8 @@ import { LogoLinkComponent } from '../../shared/logo/logo-link.component';
   `],
 })
 export class AuthComponent {
+  readonly privacyUrl = PRIVACY_URL;
+
   private readonly authService = inject(AuthService);
   private readonly router = inject(Router);
   private readonly fb = inject(FormBuilder);

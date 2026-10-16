@@ -1,35 +1,32 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, Timestamp, FieldValue } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
-import { moderateContent } from './moderation';
-import { extractProjectData, extractProjectDataFromFile } from './extraction';
+import { moderateContent, ModerationUnreadableError } from './moderation';
+import type { ModerationResponse } from './moderation';
+import { extractProjectData, extractProjectDataFromPdf } from './extraction';
+import { hasUsableContent } from './sanitize-extracted';
 import { calculatePrice, HOURLY_RATE } from './pricing';
-import { classifyGeminiError } from './gemini-retry';
+import { classifyGeminiError, describeError } from './gemini-retry';
 import { generateOfferteHtml } from './quote-generator';
+import { parseQuoteRequest } from './brief-input';
+import type { ParsedQuoteRequest } from './brief-input';
+import { readBriefSource } from './brief-source';
+import { evaluateQuoteSlot } from './quote-limits';
+import type { SlotVerdict, UserLimitData } from './quote-limits';
+import { writeModerationLog } from './moderation-log';
+import { isDisposableEmail } from '../shared/disposable-email';
 import { offerNumber } from '../shared/company';
 import {
   sendQuoteNotification,
   sendQuoteConfirmation,
 } from '../shared/email.service';
 
-const ALLOWED_MIME_TYPES = new Set([
-  'application/pdf',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'application/msword',
-  'text/plain',
-]);
-
-const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB
-const RATE_LIMIT_HOURS = 24;
-const MIN_CONTENT_WORDS = 30; // Minimum words for a valid brief
-const MAX_FAILED_ATTEMPTS = 3; // Max invalid submissions per 24h before blocking
-
-export interface QuoteRequest {
-  fileName: string;
-  mimeType: string;
-  fileBase64: string; // base64-encoded file content
-  fileSize: number;
-}
+/**
+ * What the website sends. `mode` is optional: a request without it is a file upload, so the
+ * website from before the text option keeps working against this function.
+ * `fileSize` is still sent by older websites but ignored: the real size is checked on the data.
+ */
+export type QuoteRequest = ParsedQuoteRequest | { fileSize?: number };
 
 export interface QuoteResponse {
   quoteId: string;
@@ -63,6 +60,31 @@ export interface QuoteResponse {
   };
 }
 
+const UNAVAILABLE_MESSAGE =
+  'De offertetool is op dit moment tijdelijk niet beschikbaar. Probeer het over een paar minuten opnieuw, of neem direct contact op.';
+
+/** True when a Gemini failure is on our side or Google's: the visitor can simply try again. */
+function isOutage(err: unknown): boolean {
+  const kind = classifyGeminiError(err);
+  if (kind === 'billing' || kind === 'access') {
+    // Needs action from the owner (credits empty, key revoked, model gone): make it visible in the logs
+    console.error(`ACTION REQUIRED: Gemini ${kind} problem. Check billing / API key / model name in AI Studio.`);
+  }
+  return kind === 'busy' || kind === 'billing' || kind === 'access';
+}
+
+function slotError(verdict: Extract<SlotVerdict, { ok: false }>): HttpsError {
+  // 'aborted' = a request of this user is already running; the website shows it without a daily-limit notice
+  return new HttpsError(verdict.reason === 'in-flight' ? 'aborted' : 'resource-exhausted', verdict.message);
+}
+
+const BLOCKED_MESSAGE_FILE =
+  'Je document lijkt geen projectbrief te zijn voor web- of app-ontwikkeling. Upload een document dat je software- of webontwikkelingsproject beschrijft.';
+const BLOCKED_MESSAGE_TEXT =
+  'Je tekst lijkt geen beschrijving van een web- of app-project te zijn. Beschrijf wat je wilt laten maken, voor wie het is en wat het moet kunnen.';
+const TOO_VAGUE_MESSAGE =
+  'Je beschrijving is nog te algemeen om er een offerte van te maken. Vertel wat je wilt laten maken, voor wie en wat het moet kunnen, en probeer het opnieuw.';
+
 export const generateQuote = onCall(
   {
     maxInstances: 5,
@@ -88,293 +110,294 @@ export const generateQuote = onCall(
         'Verifieer je e-mailadres voordat je een offerte aanvraagt.'
       );
     }
-
-    const { fileName, mimeType, fileBase64, fileSize } = request.data as QuoteRequest;
-
-    // --- File validation ---
-    if (!fileName || !mimeType || !fileBase64) {
-      throw new HttpsError('invalid-argument', 'Ontbrekende bestandsgegevens.');
+    if (isDisposableEmail(userEmail)) {
+      throw new HttpsError('permission-denied', 'Gebruik een echt e-mailadres om een offerte aan te vragen.');
     }
-    if (!ALLOWED_MIME_TYPES.has(mimeType)) {
-      throw new HttpsError(
-        'invalid-argument',
-        'Ongeldig bestandstype. Upload een PDF, Word-document of tekstbestand.'
-      );
-    }
-    if (fileSize > MAX_FILE_SIZE_BYTES) {
-      throw new HttpsError(
-        'invalid-argument',
-        'Bestand is te groot. Maximale bestandsgrootte is 5 MB.'
-      );
+
+    // --- Shape of the request (no Gemini, no Firestore) ---
+    const parsed = parseQuoteRequest(request.data);
+    if (!parsed.ok) {
+      throw new HttpsError('invalid-argument', parsed.message);
     }
 
     const db = getFirestore();
-    const storage = getStorage();
-
-    // --- Rate limit checks (single Firestore read for both) ---
     const userRef = db.collection('users').doc(uid);
-    const userDoc = await userRef.get();
-    const userData = userDoc.data();
 
-    // 1. Successful quote rate limit (1 per 24h)
-    if (userData?.['lastQuoteAt']) {
-      const lastQuoteAt = (userData['lastQuoteAt'] as Timestamp).toDate();
-      const hoursSinceLastQuote = (Date.now() - lastQuoteAt.getTime()) / (1000 * 60 * 60);
-      if (hoursSinceLastQuote < RATE_LIMIT_HOURS) {
-        const hoursRemaining = Math.ceil(RATE_LIMIT_HOURS - hoursSinceLastQuote);
-        throw new HttpsError(
-          'resource-exhausted',
-          `Je hebt vandaag al een offerte aangevraagd. Probeer het over ${hoursRemaining} uur opnieuw.`
-        );
-      }
+    // --- Limits, first a cheap look so a visitor over the limit does no work at all ---
+    const peek = evaluateQuoteSlot((await userRef.get()).data() as UserLimitData | undefined, Date.now());
+    if (!peek.ok) throw slotError(peek);
+
+    // --- Read the brief: size, type, cleaning, length and quality. Visitor's to fix, no Gemini yet ---
+    const read = await readBriefSource(parsed.value);
+    if (!read.ok) {
+      throw new HttpsError('invalid-argument', read.message);
     }
+    const source = read.value;
 
-    // 2. Failed attempt rate limit (max 3 invalid submissions per 24h)
-    // This prevents abuse via repeated uploads of non-brief documents that
-    // pass file validation but burn Gemini quota during moderation.
-    if (userData?.['lastFailedAttemptAt']) {
-      const lastFailedAt = (userData['lastFailedAttemptAt'] as Timestamp).toDate();
-      const hoursSinceLastFailed = (Date.now() - lastFailedAt.getTime()) / (1000 * 60 * 60);
-      const failedCount = (userData['failedAttemptCount'] as number) ?? 0;
-      if (hoursSinceLastFailed < RATE_LIMIT_HOURS && failedCount >= MAX_FAILED_ATTEMPTS) {
-        const hoursRemaining = Math.ceil(RATE_LIMIT_HOURS - hoursSinceLastFailed);
-        throw new HttpsError(
-          'resource-exhausted',
-          `Te veel ongeldige inzendingen vandaag. Probeer het over ${hoursRemaining} uur opnieuw.`
-        );
-      }
-    }
-
-    // Helper: increment failed attempt counter and then throw the given error.
-    // Called whenever a content-related rejection occurs after resources have been consumed
-    // (i.e., after the word count check — at the point where Gemini would be called).
-    const rejectWithFailedAttempt = async (message: string): Promise<never> => {
-      await userRef.set(
+    // --- Claim the slot in a transaction: limits are checked again and, if they allow it, this
+    // request is marked as running. A second request (double click, two tabs) is refused until
+    // this one is done, and every request that reaches Gemini counts as an attempt.
+    await db.runTransaction(async tx => {
+      const verdict = evaluateQuoteSlot((await tx.get(userRef)).data() as UserLimitData | undefined, Date.now());
+      if (!verdict.ok) throw slotError(verdict);
+      tx.set(
+        userRef,
         {
-          failedAttemptCount: FieldValue.increment(1),
-          lastFailedAttemptAt: FieldValue.serverTimestamp(),
+          inFlightUntil: Timestamp.fromMillis(verdict.next.inFlightUntilMs),
+          attemptWindowStart: Timestamp.fromMillis(verdict.next.attemptWindowStartMs),
+          attemptCount: verdict.next.attemptCount,
         },
         { merge: true }
       );
-      throw new HttpsError('invalid-argument', message);
-    };
-
-    // --- Decode file ---
-    const fileBuffer = Buffer.from(fileBase64, 'base64');
-
-    const isDocx =
-      mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-      mimeType === 'application/msword';
-
-    // --- Determine moderation text ---
-    // For DOCX: extract text with mammoth first so we can moderate the actual content.
-    // For TXT: use the file content directly.
-    // For PDF: use filename as hint (PDF content is moderated by Gemini during extraction).
-    let moderationText: string;
-    let preExtractedDocxText: string | undefined;
-
-    if (mimeType === 'text/plain') {
-      moderationText = fileBuffer.toString('utf-8');
-    } else if (isDocx) {
-      // Import mammoth lazily to avoid issues if not installed
-      const mammoth = await import('mammoth');
-      const { value: docxText } = await mammoth.extractRawText({ buffer: fileBuffer });
-      preExtractedDocxText = docxText;
-      moderationText = docxText;
-    } else {
-      // PDF: use filename as hint — Gemini will validate content during extraction
-      moderationText = `File: ${fileName} (PDF document)`;
-    }
-
-    // --- Word count check (before moderation) ---
-    const wordCount = moderationText.trim().split(/\s+/).filter(w => w.length > 0).length;
-    if (wordCount < MIN_CONTENT_WORDS && mimeType !== 'application/pdf') {
-      throw new HttpsError(
-        'invalid-argument',
-        'Je document is te kort om een zinvolle offerte te genereren. Geef een uitgebreidere projectomschrijving (minimaal een paar alinea\'s).'
-      );
-    }
-
-    // --- Pre-moderation check ---
-    const moderation = await moderateContent(moderationText.slice(0, 2000));
-
-    if (moderation.result === 'blocked') {
-      // Count as a failed attempt — Gemini was called, quota was consumed
-      await rejectWithFailedAttempt(
-        'Je document lijkt geen projectbrief te zijn voor web- of app-ontwikkeling. Upload een document dat je software- of webontwikkelingsproject beschrijft.'
-      );
-    }
-
-    // --- Upload brief to Firebase Storage ---
-    const quoteId = db.collection('quotes').doc().id;
-    const ext = fileName.split('.').pop() ?? 'bin';
-    const briefStoragePath = `briefs/${uid}/${quoteId}/brief.${ext}`;
-    const bucket = storage.bucket();
-
-    await bucket.file(briefStoragePath).save(fileBuffer, {
-      metadata: {
-        contentType: mimeType,
-        metadata: { uploadedBy: uid, originalName: fileName, quoteId },
-      },
     });
 
-    // --- Extract project data with Gemini ---
-    let extractedData;
+    // A Gemini outage is not the visitor's fault: the attempt is given back
+    let refundAttempt = false;
+    const outage = (message: string): HttpsError => {
+      refundAttempt = true;
+      return new HttpsError('unavailable', message);
+    };
+
+    // Files saved for a request that does not end in a quote are removed again (see the catch below)
+    let unfinishedFiles: string[] = [];
 
     try {
-      if (mimeType === 'text/plain') {
-        extractedData = await extractProjectData(fileBuffer.toString('utf-8'));
-      } else if (isDocx && preExtractedDocxText) {
-        // Reuse already-extracted text — no need to run mammoth again
-        extractedData = await extractProjectData(preExtractedDocxText);
-      } else {
-        const result = await extractProjectDataFromFile(fileBase64, mimeType, fileName);
-        extractedData = result.data;
+      // --- Pre-moderation on the whole text. NOT fail-open: an error here means "try again later" ---
+      let moderation: ModerationResponse;
+      try {
+        moderation = await moderateContent(source.moderationText);
+      } catch (err) {
+        console.error(`Moderation failed (uid=${uid} mode=${source.inputMode}): ${describeError(err)}`);
+        if (err instanceof ModerationUnreadableError) {
+          // Could be provoked by a crafted text, so this attempt is not given back
+          throw new HttpsError('unavailable', UNAVAILABLE_MESSAGE);
+        }
+        throw isOutage(err)
+          ? outage(UNAVAILABLE_MESSAGE)
+          : new HttpsError('unavailable', UNAVAILABLE_MESSAGE);
       }
-    } catch (err) {
-      // Retries are already done inside extraction. A failure here is on our side or Google's,
-      // NOT the user's: it must not count as a failed attempt, and lastQuoteAt is not set,
-      // so the user can simply try again.
-      const kind = classifyGeminiError(err);
-      console.error(`Gemini extraction failed (${kind}):`, err);
 
-      if (kind === 'billing' || kind === 'access') {
-        // Needs action from the owner (credits empty, key revoked, model gone): make it visible in the logs
-        console.error(`ACTION REQUIRED: Gemini ${kind} problem. Check billing / API key / model name in AI Studio.`);
-      }
-      if (kind === 'busy' || kind === 'billing' || kind === 'access') {
+      const inputSize = {
+        inputMode: source.inputMode,
+        bytes: source.storageBuffer.length,
+        ...(source.text !== undefined ? { chars: Array.from(source.text).length } : {}),
+      };
+
+      if (moderation.result === 'blocked') {
+        // Gemini was called, quota was used: counts as a failed attempt (max 3 per 24 hours)
+        await userRef.set(
+          {
+            failedAttemptCount: FieldValue.increment(1),
+            lastFailedAttemptAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+        await writeModerationLog({ userId: uid, result: 'blocked', reason: moderation.reason, ...inputSize });
         throw new HttpsError(
-          'unavailable',
-          'De offertetool is op dit moment tijdelijk niet beschikbaar. Probeer het over een paar minuten opnieuw, of neem direct contact op.'
+          'invalid-argument',
+          source.inputMode === 'text' ? BLOCKED_MESSAGE_TEXT : BLOCKED_MESSAGE_FILE
+        );
+      }
+
+      // --- Save the brief in Firebase Storage (typed text as brief.txt) ---
+      const quoteId = db.collection('quotes').doc().id;
+      const briefStoragePath = `briefs/${uid}/${quoteId}/brief.${source.ext}`;
+      const bucket = getStorage().bucket();
+
+      await bucket.file(briefStoragePath).save(source.storageBuffer, {
+        metadata: {
+          contentType: source.contentType,
+          metadata: { uploadedBy: uid, originalName: source.displayName, quoteId, source: source.inputMode },
+        },
+      });
+      unfinishedFiles = [briefStoragePath];
+
+      // --- Extract project data with Gemini ---
+      let extractedData;
+      try {
+        extractedData = source.pdfBase64 !== undefined
+          ? await extractProjectDataFromPdf(source.pdfBase64)
+          : await extractProjectData(source.text ?? '');
+      } catch (err) {
+        // Retries are already done inside extraction. Never log the error object: it can contain the brief.
+        const kind = classifyGeminiError(err);
+        console.error(`Gemini extraction failed (${kind}, uid=${uid} mode=${source.inputMode}): ${describeError(err)}`);
+        if (isOutage(err)) {
+          // Our side or Google's, not the visitor's: no failed attempt, the attempt is given back
+          throw outage(UNAVAILABLE_MESSAGE);
+        }
+        // Unreadable or unexpected answer: could be provoked by a crafted text, so it stays an attempt
+        throw new HttpsError(
+          'internal',
+          'Er ging iets mis bij het lezen van je beschrijving. Probeer het opnieuw, of neem direct contact op.'
+        );
+      }
+
+      if (!hasUsableContent(extractedData)) {
+        throw new HttpsError('invalid-argument', TOO_VAGUE_MESSAGE);
+      }
+
+      // --- Calculate price ---
+      const priceEstimate = calculatePrice(extractedData);
+
+      // --- Generate full HTML offer document ---
+      const generatedAt = new Date();
+      const offerteHtml = generateOfferteHtml({
+        quoteId,
+        extractedData,
+        priceEstimate,
+        userName,
+        userEmail,
+        generatedAt,
+      });
+
+      // --- Save HTML offer to Firebase Storage ---
+      const offerteStoragePath = `quotes/${quoteId}/offerte.html`;
+      await bucket.file(offerteStoragePath).save(Buffer.from(offerteHtml, 'utf-8'), {
+        metadata: {
+          contentType: 'text/html; charset=utf-8',
+          metadata: { quoteId, generatedFor: userEmail, generatedAt: generatedAt.toISOString() },
+        },
+      });
+      unfinishedFiles.push(offerteStoragePath);
+
+      // --- Generate signed download URLs (valid 30 days) ---
+      // The App Engine default service account (which Cloud Functions v2 runs as) has
+      // the Service Account Token Creator role, granting it iam.serviceAccounts.signBlob.
+      const signedUrlExpiry = Date.now() + 30 * 24 * 60 * 60 * 1000;
+      const [[briefSignedUrl], [offerteSignedUrl]] = await Promise.all([
+        bucket.file(briefStoragePath).getSignedUrl({ action: 'read', expires: signedUrlExpiry }),
+        bucket.file(offerteStoragePath).getSignedUrl({ action: 'read', expires: signedUrlExpiry }),
+      ]);
+
+      // --- Save quote to Firestore ---
+      const offerteNr = offerNumber(quoteId);
+      await db.collection('quotes').doc(quoteId).set({
+        userId: uid,
+        userEmail,
+        userName,
+        submittedAt: FieldValue.serverTimestamp(),
+        briefStoragePath,
+        offerteStoragePath,
+        offerteNr,
+        fileName: source.displayName,
+        inputMode: source.inputMode,
+        extractedData,
+        priceRange: {
+          min: priceEstimate.priceMin,
+          max: priceEstimate.priceMax,
+          currency: 'EUR',
+          hoursMin: priceEstimate.hoursMin,
+          hoursMax: priceEstimate.hoursMax,
+          fixed: priceEstimate.priceFixed,
+          hoursFixed: priceEstimate.hoursFixed,
+        },
+        phaseBreakdowns: priceEstimate.phaseBreakdowns,
+        paymentSchedule: priceEstimate.paymentSchedule,
+        breakdown: priceEstimate.breakdown,
+        status: 'pending',
+        moderationResult: moderation.result,
+        ...(moderation.reason ? { moderationReason: moderation.reason } : {}),
+      });
+
+      unfinishedFiles = []; // the quote exists: its files are kept (until the retention period ends)
+
+      // --- The quote exists: set lastQuoteAt and reset the failed attempt counter ---
+      await userRef.set(
+        {
+          email: userEmail,
+          displayName: userName,
+          lastQuoteAt: FieldValue.serverTimestamp(),
+          failedAttemptCount: 0,
+        },
+        { merge: true }
+      );
+
+      if (moderation.result === 'flagged') {
+        await writeModerationLog({ userId: uid, result: 'flagged', reason: moderation.reason, quoteId, ...inputSize });
+      }
+
+      // --- Send notification emails (fire-and-forget) ---
+      const emailPayload = {
+        userName,
+        userEmail,
+        quoteId,
+        offerteNr,
+        projectTitle: extractedData.projectTitle,
+        projectType: extractedData.projectType,
+        complexity: priceEstimate.complexity,
+        priceMin: priceEstimate.priceMin,
+        priceMax: priceEstimate.priceMax,
+        hoursMin: priceEstimate.hoursMin,
+        hoursMax: priceEstimate.hoursMax,
+        priceFixed: priceEstimate.priceFixed,
+        hoursFixed: priceEstimate.hoursFixed,
+        features: extractedData.features,
+        briefStoragePath,
+        offerteStoragePath,
+        offerteHtml,
+        briefSignedUrl,
+        offerteSignedUrl,
+        inputMode: source.inputMode,
+        moderationResult: moderation.result,
+        moderationReason: moderation.reason,
+      };
+
+      Promise.all([
+        sendQuoteNotification(emailPayload),
+        sendQuoteConfirmation(emailPayload),
+      ]).catch(err => console.error(`Email sending failed: ${describeError(err)}`));
+
+      // --- Return quote to client ---
+      return {
+        quoteId,
+        offerteNr,
+        projectTitle: extractedData.projectTitle,
+        projectType: extractedData.projectType,
+        complexity: priceEstimate.complexity,
+        description: extractedData.description,
+        targetAudience: extractedData.targetAudience,
+        timeline: extractedData.timeline,
+        features: extractedData.features,
+        technicalRequirements: extractedData.technicalRequirements,
+        hoursMin: priceEstimate.hoursMin,
+        hoursMax: priceEstimate.hoursMax,
+        priceMin: priceEstimate.priceMin,
+        priceMax: priceEstimate.priceMax,
+        hoursFixed: priceEstimate.hoursFixed,
+        priceFixed: priceEstimate.priceFixed,
+        currency: 'EUR',
+        hourlyRate: HOURLY_RATE,
+        offerteHtml,
+        offerteStoragePath,
+        breakdown: priceEstimate.breakdown,
+      };
+    } catch (err) {
+      // No quote came out of this request: do not keep the visitor's text (or half an offer) in Storage
+      if (unfinishedFiles.length > 0) {
+        const bucket = getStorage().bucket();
+        await Promise.all(
+          unfinishedFiles.map(path =>
+            bucket.file(path).delete({ ignoreNotFound: true }).catch(error => {
+              console.error(`Removing an unfinished file failed (uid=${uid}): ${describeError(error)}`);
+            })
+          )
         );
       }
       throw err;
+    } finally {
+      // Release the slot, whatever happened. A crash that skips this releases itself after SLOT_SECONDS.
+      try {
+        await userRef.set(
+          {
+            inFlightUntil: FieldValue.delete(),
+            ...(refundAttempt ? { attemptCount: FieldValue.increment(-1) } : {}),
+          },
+          { merge: true }
+        );
+      } catch (err) {
+        console.error(`Releasing the quote slot failed (uid=${uid}): ${describeError(err)}`);
+      }
     }
-
-    // --- Calculate price ---
-    const priceEstimate = calculatePrice(extractedData);
-
-    // --- Generate full HTML offer document ---
-    const generatedAt = new Date();
-    const offerteHtml = generateOfferteHtml({
-      quoteId,
-      extractedData,
-      priceEstimate,
-      userName,
-      userEmail,
-      generatedAt,
-    });
-
-    // --- Save HTML offer to Firebase Storage ---
-    const offerteStoragePath = `quotes/${quoteId}/offerte.html`;
-    await bucket.file(offerteStoragePath).save(Buffer.from(offerteHtml, 'utf-8'), {
-      metadata: {
-        contentType: 'text/html; charset=utf-8',
-        metadata: { quoteId, generatedFor: userEmail, generatedAt: generatedAt.toISOString() },
-      },
-    });
-
-    // --- Generate signed download URLs (valid 30 days) ---
-    // The App Engine default service account (which Cloud Functions v2 runs as) has
-    // the Service Account Token Creator role, granting it iam.serviceAccounts.signBlob.
-    const signedUrlExpiry = Date.now() + 30 * 24 * 60 * 60 * 1000;
-    const [[briefSignedUrl], [offerteSignedUrl]] = await Promise.all([
-      bucket.file(briefStoragePath).getSignedUrl({ action: 'read', expires: signedUrlExpiry }),
-      bucket.file(offerteStoragePath).getSignedUrl({ action: 'read', expires: signedUrlExpiry }),
-    ]);
-
-    // --- Save quote to Firestore ---
-    const offerteNr = offerNumber(quoteId);
-    const quoteData = {
-      userId: uid,
-      userEmail,
-      userName,
-      submittedAt: FieldValue.serverTimestamp(),
-      briefStoragePath,
-      offerteStoragePath,
-      offerteNr,
-      fileName,
-      extractedData,
-      priceRange: {
-        min: priceEstimate.priceMin,
-        max: priceEstimate.priceMax,
-        currency: 'EUR',
-        hoursMin: priceEstimate.hoursMin,
-        hoursMax: priceEstimate.hoursMax,
-        fixed: priceEstimate.priceFixed,
-        hoursFixed: priceEstimate.hoursFixed,
-      },
-      phaseBreakdowns: priceEstimate.phaseBreakdowns,
-      paymentSchedule: priceEstimate.paymentSchedule,
-      breakdown: priceEstimate.breakdown,
-      status: 'pending',
-      moderationResult: moderation.result,
-    };
-
-    await db.collection('quotes').doc(quoteId).set(quoteData);
-
-    // --- Update user record: set lastQuoteAt and reset failed attempt counter ---
-    await userRef.set(
-      {
-        email: userEmail,
-        displayName: userName,
-        lastQuoteAt: FieldValue.serverTimestamp(),
-        failedAttemptCount: 0, // reset on successful quote
-      },
-      { merge: true }
-    );
-
-    // --- Send notification emails (fire-and-forget) ---
-    const emailPayload = {
-      userName,
-      userEmail,
-      quoteId,
-      offerteNr,
-      projectTitle: extractedData.projectTitle,
-      projectType: extractedData.projectType,
-      complexity: priceEstimate.complexity,
-      priceMin: priceEstimate.priceMin,
-      priceMax: priceEstimate.priceMax,
-      hoursMin: priceEstimate.hoursMin,
-      hoursMax: priceEstimate.hoursMax,
-      priceFixed: priceEstimate.priceFixed,
-      hoursFixed: priceEstimate.hoursFixed,
-      features: extractedData.features,
-      briefStoragePath,
-      offerteStoragePath,
-      offerteHtml,
-      briefSignedUrl,
-      offerteSignedUrl,
-    };
-
-    Promise.all([
-      sendQuoteNotification(emailPayload),
-      sendQuoteConfirmation(emailPayload),
-    ]).catch(err => console.error('Email sending failed:', err));
-
-    // --- Return quote to client ---
-    return {
-      quoteId,
-      offerteNr,
-      projectTitle: extractedData.projectTitle,
-      projectType: extractedData.projectType,
-      complexity: priceEstimate.complexity,
-      description: extractedData.description,
-      targetAudience: extractedData.targetAudience,
-      timeline: extractedData.timeline,
-      features: extractedData.features,
-      technicalRequirements: extractedData.technicalRequirements,
-      hoursMin: priceEstimate.hoursMin,
-      hoursMax: priceEstimate.hoursMax,
-      priceMin: priceEstimate.priceMin,
-      priceMax: priceEstimate.priceMax,
-      hoursFixed: priceEstimate.hoursFixed,
-      priceFixed: priceEstimate.priceFixed,
-      currency: 'EUR',
-      hourlyRate: HOURLY_RATE,
-      offerteHtml,
-      offerteStoragePath,
-      breakdown: priceEstimate.breakdown,
-    };
   }
 );

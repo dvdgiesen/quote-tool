@@ -8,6 +8,7 @@
     "build": "node build.js",
     "watch": "ng build quote-tool --watch --configuration development",
     "test": "ng test quote-tool",
+    "test:functions": "vitest run --root functions",
     "serve:ssr:quote-tool": "node dist/quote-tool/server/server.mjs"
   },
   "private": true,

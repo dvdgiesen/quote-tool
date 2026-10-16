@@ -8,3 +8,4 @@ if (!getApps().length) {
 // Export all Cloud Functions
 export { contact } from './contact/contact.function';
 export { generateQuote } from './quote/quote.function';
+export { retentionCleanup } from './quote/retention.function';

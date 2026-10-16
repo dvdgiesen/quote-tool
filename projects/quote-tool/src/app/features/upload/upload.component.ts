@@ -4,12 +4,18 @@ import {
 } from '@angular/core';
 import { isPlatformBrowser } from '@angular/common';
 import { Router } from '@angular/router';
+import { FormControl, ReactiveFormsModule } from '@angular/forms';
+import { toSignal } from '@angular/core/rxjs-interop';
 import { doc, getDoc } from 'firebase/firestore';
 import { AuthService } from '../../core/services/auth.service';
 import { QuoteService } from '../../core/services/quote.service';
 import { FirebaseService } from '../../core/services/firebase.service';
 import { IconComponent } from '../../shared/icons/icon.component';
 import { LogoLinkComponent } from '../../shared/logo/logo-link.component';
+import { PRIVACY_URL } from '../../shared/links';
+import {
+  MAX_TYPED_TEXT_CHARS, MIN_BRIEF_WORDS, TEXTAREA_HARD_MAX_LENGTH, checkBriefText,
+} from './brief-text';
 
 const ACCEPTED_TYPES = [
   'application/pdf',
@@ -19,12 +25,16 @@ const ACCEPTED_TYPES = [
 ];
 const MAX_SIZE_MB = 5;
 const MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024;
+/** The typed text survives a reload or an expired session; it is gone when the tab is closed. */
+const DRAFT_KEY = 'quote-tool:draft-text';
+
+type InputMode = 'text' | 'file';
 
 @Component({
   selector: 'app-upload',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [IconComponent, LogoLinkComponent],
+  imports: [IconComponent, LogoLinkComponent, ReactiveFormsModule],
   template: `
     <main class="upload">
       <div class="container container--xs">
@@ -35,9 +45,9 @@ const MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024;
         <!-- Header -->
         <div class="upload__header">
           <span class="section-label">Stap 2 van 2</span>
-          <h1>Upload je project</h1>
+          <h1>Vertel over je project</h1>
           <p>
-            Upload een PDF, Word-document of tekstbestand met een beschrijving van je project.
+            Typ of plak een beschrijving van je project, of upload een PDF, Word-document of tekstbestand.
             Onze GenAI leest het en genereert direct een prijsindicatie.
           </p>
         </div>
@@ -74,6 +84,29 @@ const MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024;
         <!-- Upload form -->
         <div class="upload__card card">
 
+          <!-- Choice: type text or upload a file -->
+          <fieldset class="upload__mode">
+            <legend class="sr-only">Hoe wil je je project doorgeven?</legend>
+            <div class="upload__mode-options">
+              @for (option of modeOptions; track option.value) {
+                <label class="upload__mode-option" [class.upload__mode-option--active]="mode() === option.value">
+                  <input
+                    type="radio"
+                    class="sr-only"
+                    name="inputMode"
+                    [value]="option.value"
+                    [checked]="mode() === option.value"
+                    [disabled]="loading()"
+                    (change)="setMode(option.value)"
+                  />
+                  <span class="upload__mode-icon" aria-hidden="true"><app-icon [name]="option.icon" [size]="18" /></span>
+                  <span>{{ option.label }}</span>
+                </label>
+              }
+            </div>
+          </fieldset>
+
+          @if (mode() === 'file') {
           <!-- Drop zone -->
           <div
             class="upload__dropzone"
@@ -112,7 +145,7 @@ const MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024;
                   class="upload__remove-btn"
                   (click)="removeFile($event)"
                   type="button"
-                  aria-label="Remove file"
+                  aria-label="Bestand verwijderen"
                 >
                   <app-icon name="x" [size]="16" />
                 </button>
@@ -132,6 +165,43 @@ const MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024;
 
           @if (fileError()) {
             <p class="form-error" style="margin-top: var(--space-2);">{{ fileError() }}</p>
+          }
+          } @else {
+          <!-- Typed or pasted text -->
+          <div class="form-field upload__text-field">
+            <label class="form-label" for="briefText">Beschrijf je project</label>
+            <p class="upload__text-hint" id="briefTextHint">
+              Schrijf in gewone woorden wat je wilt laten maken, voor wie het is en wat het moet kunnen.
+              Minimaal {{ minWords }} woorden.
+            </p>
+            <textarea
+              id="briefText"
+              class="form-input upload__textarea"
+              [class.form-input--error]="!!textError()"
+              [formControl]="textControl"
+              [readOnly]="loading()"
+              [attr.maxlength]="textareaHardMax"
+              [attr.aria-invalid]="textError() ? 'true' : null"
+              aria-describedby="briefTextHint briefTextCount briefTextError"
+              rows="10"
+              lang="nl"
+              spellcheck="true"
+              autocapitalize="sentences"
+              placeholder="Bijvoorbeeld: ik heb een bloemenwinkel en wil een website waar klanten boeketten kunnen bestellen en betalen. Ik wil zelf de prijzen kunnen aanpassen. Het moet er fris uitzien op de telefoon en over twee maanden klaar zijn."
+              (blur)="onTextBlur()"
+            ></textarea>
+            <p class="upload__text-count" id="briefTextCount" [class.upload__text-count--over]="textCheck().problem === 'too-long'">
+              {{ textCheck().chars }} / {{ maxTextChars }} tekens
+              @if (wordsToGo() > 0) {
+                &middot; nog {{ wordsToGo() }} {{ wordsToGo() === 1 ? 'woord' : 'woorden' }} nodig
+              }
+            </p>
+            <!-- Announces only when the state changes (not on every key press) -->
+            <p class="sr-only" aria-live="polite">{{ textStatus() }}</p>
+            @if (textError()) {
+              <p class="form-error" id="briefTextError">{{ textError() }}</p>
+            }
+          </div>
           }
 
           <!-- Submit button — becomes a progress bar while loading -->
@@ -186,6 +256,11 @@ const MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024;
           <span class="upload__user">Ingelogd als {{ displayName() }}</span>
           <button class="btn btn--ghost" (click)="signOut()" type="button">Uitloggen</button>
         </div>
+
+        <!-- One place for the privacy statement: below the card, outside it -->
+        <p class="upload__privacy">
+          <a [href]="privacyUrl" target="_blank" rel="noopener noreferrer">Privacy: wat we bewaren en hoe lang</a>
+        </p>
 
       </div>
     </main>
@@ -250,6 +325,90 @@ const MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024;
 
     .upload__card {
       padding: var(--space-8);
+    }
+
+    /* Choice between typing and uploading: two native radio buttons styled as one segmented control */
+    .upload__mode {
+      border: 0;
+      padding: 0;
+      margin: 0 0 var(--space-6);
+      min-width: 0;
+    }
+
+    .upload__mode-options {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-1);
+      padding: var(--space-1);
+      background: var(--color-surface-2);
+      border-radius: var(--radius-lg);
+    }
+
+    .upload__mode-option {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-2);
+      min-height: 44px;
+      padding: var(--space-2) var(--space-3);
+      border-radius: var(--radius-md);
+      font-size: var(--text-sm);
+      font-weight: var(--font-semibold);
+      color: var(--color-text-muted);
+      text-align: center;
+      cursor: pointer;
+      transition: background var(--transition-fast), color var(--transition-fast);
+
+      &:hover { color: var(--color-text); }
+
+      &--active {
+        background: var(--color-surface);
+        color: var(--color-primary);
+        box-shadow: 0 1px 3px var(--color-border);
+      }
+
+      /* Keyboard focus lands on the visually hidden radio: show it on the label */
+      &:has(input:focus-visible) {
+        outline: 2px solid var(--color-primary);
+        outline-offset: 2px;
+      }
+
+      &:has(input:disabled) {
+        cursor: not-allowed;
+        opacity: 0.6;
+      }
+    }
+
+    .upload__mode-icon {
+      display: inline-flex;
+      flex-shrink: 0;
+    }
+
+    .upload__text-field {
+      margin-bottom: var(--space-6);
+    }
+
+    .upload__text-hint,
+    .upload__text-count {
+      font-size: var(--text-sm);
+      color: var(--color-text-muted);
+      margin: 0;
+      max-width: none;
+    }
+
+    .upload__text-count {
+      color: var(--color-text-subtle);
+
+      &--over { color: var(--color-error); font-weight: var(--font-semibold); }
+    }
+
+    /* 16px minimum: smaller text makes iOS zoom in when the field gets focus */
+    .upload__textarea {
+      min-height: 14rem;
+      font-size: max(1rem, var(--text-base));
+      line-height: 1.55;
+      resize: vertical;
+      font-family: inherit;
     }
 
     .upload__dropzone {
@@ -472,6 +631,16 @@ const MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024;
       margin-top: var(--space-6);
     }
 
+    .upload__privacy {
+      margin: var(--space-4) 0 0;
+      text-align: center;
+      font-size: var(--text-sm);
+      max-width: none;
+
+      a { color: var(--color-text-subtle); text-decoration: underline; }
+      a:hover { color: var(--color-primary); }
+    }
+
     .upload__user {
       font-size: var(--text-sm);
       color: var(--color-text-muted);
@@ -488,6 +657,42 @@ export class UploadComponent implements OnInit {
   readonly displayName = this.authService.displayName;
   readonly isEmailVerified = this.authService.isEmailVerified;
 
+  /** Text is the default: most visitors would rather type than make a document first. */
+  readonly mode = signal<InputMode>('text');
+  readonly modeOptions: { value: InputMode; label: string; icon: 'file-text' | 'upload' }[] = [
+    { value: 'text', label: 'Tekst typen', icon: 'file-text' },
+    { value: 'file', label: 'Bestand uploaden', icon: 'upload' },
+  ];
+
+  private readonly initialDraft = this.readDraft();
+  readonly textControl = new FormControl<string>(this.initialDraft, { nonNullable: true });
+  private readonly textValue = toSignal(this.textControl.valueChanges, { initialValue: this.initialDraft });
+  /** Errors for the text field appear after leaving the field or trying to submit, not while typing. */
+  private readonly textTouched = signal(false);
+
+  readonly textCheck = computed(() => checkBriefText(this.textValue()));
+  readonly wordsToGo = computed(() => Math.max(0, MIN_BRIEF_WORDS - this.textCheck().words));
+  readonly textError = computed<string | null>(() => {
+    const { problem, message } = this.textCheck();
+    if (!problem || !message) return null;
+    if (problem === 'too-long') return message;
+    return this.textTouched() ? message : null;
+  });
+  /** Spoken by screen readers. A constant text per state, so it is not repeated on every key press. */
+  readonly textStatus = computed(() => {
+    const { problem, chars, words } = this.textCheck();
+    if (problem === 'too-long') return 'Je tekst is te lang.';
+    if (chars >= MAX_TYPED_TEXT_CHARS * 0.8) return 'Je tekst is bijna op de maximale lengte.';
+    if (!problem && words >= MIN_BRIEF_WORDS) return 'Je tekst is lang genoeg.';
+    return '';
+  });
+
+  /** Opens in a new tab, so the typed text stays on this page. */
+  readonly privacyUrl = PRIVACY_URL;
+  readonly maxTextChars = MAX_TYPED_TEXT_CHARS;
+  readonly minWords = MIN_BRIEF_WORDS;
+  readonly textareaHardMax = TEXTAREA_HARD_MAX_LENGTH;
+
   readonly selectedFile = signal<File | null>(null);
   readonly isDragging = signal(false);
   readonly fileError = signal<string | null>(null);
@@ -503,8 +708,9 @@ export class UploadComponent implements OnInit {
   readonly maxSizeMb = MAX_SIZE_MB;
 
   readonly canSubmit = computed(() =>
-    !!this.selectedFile() &&
-    !this.fileError() &&
+    (this.mode() === 'file'
+      ? !!this.selectedFile() && !this.fileError()
+      : this.textCheck().problem === undefined) &&
     !this.loading() &&
     !this.isRateLimited() &&
     this.authService.isEmailVerified()
@@ -527,6 +733,36 @@ export class UploadComponent implements OnInit {
         this.router.navigate(['/auth']);
       }
     });
+
+    // Keep the typed text for this browser tab, so a reload or an expired session does not lose it
+    effect(() => this.saveDraft(this.textValue()));
+  }
+
+  setMode(mode: InputMode): void {
+    if (!this.loading()) this.mode.set(mode);
+  }
+
+  onTextBlur(): void {
+    this.textTouched.set(true);
+  }
+
+  private readDraft(): string {
+    if (!isPlatformBrowser(this.platformId)) return '';
+    try {
+      return sessionStorage.getItem(DRAFT_KEY) ?? '';
+    } catch {
+      return ''; // storage blocked (private mode, policy): just no draft
+    }
+  }
+
+  private saveDraft(text: string): void {
+    if (!isPlatformBrowser(this.platformId)) return;
+    try {
+      if (text) sessionStorage.setItem(DRAFT_KEY, text);
+      else sessionStorage.removeItem(DRAFT_KEY);
+    } catch {
+      // ignore: the draft is a convenience
+    }
   }
 
   async ngOnInit(): Promise<void> {
@@ -612,8 +848,12 @@ export class UploadComponent implements OnInit {
   }
 
   async onSubmit(): Promise<void> {
+    const mode = this.mode();
     const file = this.selectedFile();
-    if (!file || !this.canSubmit()) return;
+    if (mode === 'text') this.textTouched.set(true);
+    if (!this.canSubmit() || (mode === 'file' && !file)) return;
+    // The text is sent exactly as it is counted: cleaned the same way the server does it
+    const text = this.textCheck().text;
 
     this.loading.set(true);
     this.loadingProgress.set(0);
@@ -621,8 +861,12 @@ export class UploadComponent implements OnInit {
 
     // Each step: [message, target progress %, delay before next step (ms)]
     const steps: [string, number, number][] = [
-      ['Je brief uploaden...',           15, 2500],
-      ['Je document lezen...',           32, 3000],
+      mode === 'text'
+        ? ['Je tekst controleren...',    15, 2500]
+        : ['Je brief uploaden...',        15, 2500],
+      mode === 'text'
+        ? ['Je beschrijving lezen...',   32, 3000]
+        : ['Je document lezen...',        32, 3000],
       ['Projectdetails extraheren...',   62, 8000],
       ['Je indicatie berekenen...',      82, 6000],
       ['Je offerte afronden...',         94, 0],   // stays here until response
@@ -647,7 +891,10 @@ export class UploadComponent implements OnInit {
     }
 
     try {
-      const quote = await this.quoteService.generateQuote(file);
+      const quote = mode === 'text'
+        ? await this.quoteService.generateQuoteFromText(text)
+        : await this.quoteService.generateQuote(file!);
+      if (mode === 'text') this.textControl.setValue(''); // the draft is no longer needed
       if (progressTimer) clearTimeout(progressTimer);
       // Snap to 100% briefly before navigating
       this.loadingProgress.set(100);
@@ -665,14 +912,22 @@ export class UploadComponent implements OnInit {
       const message = (err as { message?: string })?.message ?? '';
 
       if (code === 'functions/resource-exhausted' || message.includes('already submitted')) {
-        this.isRateLimited.set(true);
-        this.error.set('Je hebt vandaag al een offerte aangevraagd. Probeer het morgen opnieuw.');
+        // Only the daily limit blocks the form; "too many attempts" shows the server message as it is
+        if (message.includes('vandaag al een offerte')) this.isRateLimited.set(true);
+        this.error.set(message || 'Je hebt vandaag al een offerte aangevraagd. Probeer het morgen opnieuw.');
+      } else if (code === 'functions/aborted') {
+        // Another request of this user is still running (double click, second tab)
+        this.error.set(message || 'Er wordt al een offerte voor je gemaakt. Kijk ook in je mailbox.');
       } else if (code === 'functions/failed-precondition') {
         this.error.set('Verifieer je e-mailadres voordat je een offerte aanvraagt.');
+      } else if (code === 'functions/unauthenticated') {
+        this.error.set('Je sessie is verlopen. Log opnieuw in; je tekst blijft bewaard.');
+      } else if (code === 'functions/deadline-exceeded') {
+        this.error.set('Dit duurt langer dan verwacht. Kijk eerst in je mailbox: je offerte kan al onderweg zijn. Probeer het anders over een paar minuten opnieuw.');
       } else if (code === 'functions/unavailable') {
         // Gemini is busy or unavailable: not the user's fault, and it does not count as an attempt
         this.error.set(message || 'De offertetool is tijdelijk niet beschikbaar. Probeer het over een paar minuten opnieuw.');
-      } else if (code === 'functions/invalid-argument') {
+      } else if (code === 'functions/invalid-argument' || code === 'functions/permission-denied') {
         // Show the human-readable message from the server directly
         this.error.set(message);
       } else {

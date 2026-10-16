@@ -2,12 +2,19 @@ import { Injectable, inject } from '@angular/core';
 import { httpsCallable } from 'firebase/functions';
 import { FirebaseService } from './firebase.service';
 
-export interface QuoteRequest {
-  fileName: string;
-  mimeType: string;
-  fileBase64: string;
-  fileSize: number;
-}
+/**
+ * What the Cloud Function accepts: typed text or a file. The server checks everything again
+ * (functions/src/quote/brief-input.ts); the size of a file is measured there, not sent from here.
+ */
+export type QuoteRequest =
+  | { mode: 'text'; text: string }
+  | { mode: 'file'; fileName: string; mimeType: string; fileBase64: string };
+
+/**
+ * The function may take up to 300 seconds (Gemini retries included). The Firebase default of
+ * 70 seconds would show an error while the quote is still being made on the server.
+ */
+const CALLABLE_TIMEOUT_MS = 310_000;
 
 export interface QuoteResponse {
   quoteId: string;
@@ -64,20 +71,28 @@ export class QuoteService {
    * Calls the generateQuote Cloud Function with the uploaded file.
    */
   async generateQuote(file: File): Promise<QuoteResponse> {
-    const fileBase64 = await this.fileToBase64(file);
-
-    const generateQuoteFn = httpsCallable<QuoteRequest, QuoteResponse>(
-      this.firebase.functions,
-      'generateQuote'
-    );
-
-    const result = await generateQuoteFn({
+    return this.call({
+      mode: 'file',
       fileName: file.name,
       mimeType: file.type,
-      fileBase64,
-      fileSize: file.size,
+      fileBase64: await this.fileToBase64(file),
     });
+  }
 
+  /**
+   * Calls the generateQuote Cloud Function with typed or pasted text.
+   */
+  async generateQuoteFromText(text: string): Promise<QuoteResponse> {
+    return this.call({ mode: 'text', text });
+  }
+
+  private async call(request: QuoteRequest): Promise<QuoteResponse> {
+    const generateQuoteFn = httpsCallable<QuoteRequest, QuoteResponse>(
+      this.firebase.functions,
+      'generateQuote',
+      { timeout: CALLABLE_TIMEOUT_MS }
+    );
+    const result = await generateQuoteFn(request);
     return result.data;
   }
 

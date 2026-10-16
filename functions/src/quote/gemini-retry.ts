@@ -44,6 +44,17 @@ export function classifyGeminiError(err: unknown): GeminiFailureKind {
   return isNetworkError(err) ? 'busy' : 'other';
 }
 
+/**
+ * Short description of an error that is safe to log: the error name and HTTP status only.
+ * Never log the error object or its message: a JSON syntax error quotes the model output, and an
+ * API error can echo parts of the request, and both can contain the visitor's text.
+ */
+export function describeError(err: unknown): string {
+  const name = err instanceof Error ? err.name : typeof err;
+  const status = statusOf(err);
+  return status === undefined ? name : `${name} status=${status}`;
+}
+
 export interface RetryOptions {
   /** Total number of attempts, including the first one. */
   attempts?: number;

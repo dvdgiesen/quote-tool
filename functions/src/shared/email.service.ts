@@ -45,6 +45,12 @@ export interface QuoteEmailPayload {
   briefSignedUrl: string;
   /** Pre-signed download URL for the HTML offer (valid 30 days) */
   offerteSignedUrl: string;
+  /** Typed text or an uploaded file. Optional so older callers keep working. */
+  inputMode?: 'text' | 'file';
+  /** Result of the pre-moderation. 'flagged' is shown to the owner as a warning. */
+  moderationResult?: 'clean' | 'flagged' | 'blocked';
+  /** Short reason from the moderator (Dutch), only for flagged. */
+  moderationReason?: string;
 }
 
 /**
@@ -124,10 +130,16 @@ export async function sendQuoteNotification(payload: QuoteEmailPayload): Promise
     from: fromAddress(),
     to: ownerEmail(),
     replyTo: payload.userEmail,
-    subject: `Nieuwe offerte: ${payload.projectTitle} — ${payload.userName}`,
+    subject: `${payload.moderationResult === 'flagged' ? '[Controleren] ' : ''}Nieuwe offerte: ${payload.projectTitle} — ${payload.userName}`,
     html: `
       <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
         <h2 style="color: ${BRAND.teal};">Nieuwe offerte gegenereerd</h2>
+        ${payload.moderationResult === 'flagged' ? `
+        <div style="background: #fbf3e4; border: 1px solid ${BRAND.warning}; border-radius: 8px; padding: 12px 16px; margin: 0 0 16px;">
+          <strong style="color: ${BRAND.warning};">Let op: de controle twijfelde over deze aanvraag</strong>
+          <p style="margin: 6px 0 0; font-size: 13px;">Reden: ${escapeHtml(payload.moderationReason || 'geen reden opgegeven')}</p>
+          <p style="margin: 6px 0 0; font-size: 12px; color: ${BRAND.subtle};">De offerte is wel gemaakt en naar de klant gestuurd. Lees de brief na voordat je erop ingaat.</p>
+        </div>` : ''}
         <table style="width: 100%; border-collapse: collapse;">
           <tr>
             <td style="padding: 8px 0; font-weight: bold; width: 160px;">Klant</td>
@@ -136,6 +148,10 @@ export async function sendQuoteNotification(payload: QuoteEmailPayload): Promise
           <tr>
             <td style="padding: 8px 0; font-weight: bold;">E-mail</td>
             <td style="padding: 8px 0;"><a href="mailto:${escapeHtml(payload.userEmail)}">${escapeHtml(payload.userEmail)}</a></td>
+          </tr>
+          <tr>
+            <td style="padding: 8px 0; font-weight: bold;">Invoer</td>
+            <td style="padding: 8px 0;">${payload.inputMode === 'text' ? 'Getypte of geplakte tekst' : 'Geüpload bestand'}</td>
           </tr>
           <tr>
             <td style="padding: 8px 0; font-weight: bold;">Project</td>
@@ -168,11 +184,11 @@ export async function sendQuoteNotification(payload: QuoteEmailPayload): Promise
           <h3 style="color: ${BRAND.teal}; margin: 0 0 12px;">Bestanden downloaden</h3>
           <table style="width: 100%; border-collapse: collapse;">
             <tr>
-              <td style="padding: 6px 0; font-size: 13px; width: 120px; color: ${BRAND.muted};"><strong>Brief</strong></td>
+              <td style="padding: 6px 0; font-size: 13px; width: 120px; color: ${BRAND.muted};"><strong>${payload.inputMode === 'text' ? 'Getypte tekst' : 'Brief'}</strong></td>
               <td style="padding: 6px 0;">
                 <a href="${payload.briefSignedUrl}"
                    style="display: inline-block; background: ${BRAND.teal}; color: ${BRAND.onPrimary}; text-decoration: none; padding: 7px 16px; border-radius: 6px; font-size: 13px; font-weight: 600;">
-                  Download brief ↓
+                  ${payload.inputMode === 'text' ? 'Download tekst ↓' : 'Download brief ↓'}
                 </a>
               </td>
             </tr>

@@ -1,20 +1,7 @@
 import { onRequest } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { sendContactNotification, sendContactConfirmation } from '../shared/email.service';
-
-// Disposable email domain blocklist
-const BLOCKED_DOMAINS = new Set([
-  'mailinator.com', 'guerrillamail.com', 'tempmail.com', 'throwaway.email',
-  'yopmail.com', 'sharklasers.com', 'guerrillamailblock.com', 'grr.la',
-  'guerrillamail.info', 'guerrillamail.biz', 'guerrillamail.de', 'guerrillamail.net',
-  'guerrillamail.org', 'spam4.me', 'trashmail.com', 'trashmail.me',
-  'dispostable.com', 'maildrop.cc', 'spamgourmet.com', 'fakeinbox.com',
-]);
-
-function isDisposableEmail(email: string): boolean {
-  const domain = email.split('@')[1]?.toLowerCase();
-  return domain ? BLOCKED_DOMAINS.has(domain) : false;
-}
+import { isDisposableEmail } from '../shared/disposable-email';
 
 export const contact = onRequest(
   {
