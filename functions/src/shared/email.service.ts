@@ -109,7 +109,7 @@ export async function sendContactConfirmation(payload: ContactEmailPayload): Pro
         </blockquote>
         <p>Tot snel,<br/><strong>${escapeHtml(getCompany().ownerFirstName)}</strong></p>
         <p style="color: ${BRAND.subtle}; font-size: 12px; margin-top: 24px;">
-          ${escapeHtml(getCompany().website)} — AI-assisted developer
+          ${escapeHtml(getCompany().website)} — Solutions Architect (Full-Cycle)
         </p>
       </div>
     `,
