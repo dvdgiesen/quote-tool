@@ -2,7 +2,15 @@
 // QUOTE TOOL — Global styles entry point
 // =============================================================================
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+// Inter, self-hosted: one variable file, weights 400-800, Latin subset.
+// Licence: src/fonts/Inter-LICENSE.txt (SIL Open Font License).
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url('fonts/Inter-latin.woff2') format('woff2');
+}
 
 @import 'styles/tokens';
 

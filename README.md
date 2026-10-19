@@ -232,6 +232,7 @@ Never the text of a visitor, a file name or an error object (a JSON error quotes
 - **Dry run by default.** Without `RETENTION_MODE=delete` in `functions/.env` the function only logs how many records it would delete.
 - The decisions (what is old enough, what is kept) are pure functions in `retention.ts`, and tested.
 - Data is stored in `europe-west4`.
+- **No analytics and no tracking.** The app sets no measuring or advertising cookies. What the browser stores is what the tool needs: the sign-in session (Firebase Authentication) and the App Check token. App Check uses Google reCAPTCHA Enterprise, which Google may process outside the EU. The font (Inter) is served from the app itself, not from Google Fonts.
 
 ---
 

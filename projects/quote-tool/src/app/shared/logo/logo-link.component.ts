@@ -16,7 +16,7 @@ import { Component, ChangeDetectionStrategy } from '@angular/core';
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <a
-      href="https://watsturen.nl/projects/quote-tool"
+      href="https://watsturen.nl/projecten/quote-tool"
       class="logo-link"
       aria-label="Terug naar watsturen. portfolio"
       rel="noopener noreferrer"

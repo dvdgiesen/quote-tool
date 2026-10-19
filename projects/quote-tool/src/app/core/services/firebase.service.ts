@@ -5,10 +5,13 @@ import { getFirestore, Firestore } from 'firebase/firestore';
 import { getStorage, FirebaseStorage } from 'firebase/storage';
 import { getAuth, Auth } from 'firebase/auth';
 import { getFunctions, Functions } from 'firebase/functions';
-import { getAnalytics, Analytics } from 'firebase/analytics';
 import { initializeAppCheck, ReCaptchaEnterpriseProvider } from 'firebase/app-check';
 import { environment } from '../../../environments/environment';
 
+/**
+ * No analytics on purpose: it set Google Analytics cookies on the first visit, before anyone had
+ * chosen anything. The only browser storage left is what the tool needs: login and App Check.
+ */
 @Injectable({ providedIn: 'root' })
 export class FirebaseService {
   private readonly platformId = inject(PLATFORM_ID);
@@ -18,7 +21,6 @@ export class FirebaseService {
   readonly storage: FirebaseStorage;
   readonly auth: Auth;
   readonly functions: Functions;
-  analytics: Analytics | null = null;
 
   constructor() {
     this.app = getApps().length
@@ -38,8 +40,6 @@ export class FirebaseService {
         ),
         isTokenAutoRefreshEnabled: true,
       });
-
-      this.analytics = getAnalytics(this.app);
     }
   }
 }
