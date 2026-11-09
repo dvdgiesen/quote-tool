@@ -280,8 +280,8 @@ export class LandingComponent {
   readonly expectations: Expectation[] = [
     {
       icon: 'euro',
-      title: 'Vaste prijs per fase',
-      description: 'Een voorstel met een vaste prijs per fase, op basis van €65/uur, projecttype, complexiteit en de functies in je brief.',
+      title: 'Vastgestelde prijs per fase',
+      description: 'Een voorstel met een vastgestelde prijs per fase, op basis van €65/uur, projecttype, complexiteit en de functies in je brief.',
     },
     {
       icon: 'list',

@@ -231,7 +231,7 @@ export function generateOfferteHtml(data: OfferteData): string {
 <div class="container">
 
   <div class="ai-disclaimer">
-    <strong>Let op:</strong> Dit is een GenAI-gegenereerde offerte op basis van uw projectbrief. Per fase wordt een vaste prijs voorgesteld, op basis van de scope zoals beschreven in deze offerte. Definitieve prijsafspraken worden gemaakt na een kick-off gesprek over de exacte scope.
+    <strong>Let op:</strong> Dit is een GenAI-gegenereerde offerte op basis van uw projectbrief. Per fase wordt een vastgestelde prijs voorgesteld, op basis van de scope zoals beschreven in deze offerte. Definitieve prijsafspraken worden gemaakt na een kick-off gesprek over de exacte scope.
   </div>
 
   <!-- 1. PROJECTOMSCHRIJVING -->
@@ -295,7 +295,7 @@ export function generateOfferteHtml(data: OfferteData): string {
           <td class="bedrag">€ ${fmtNum(item.priceFixed)}</td>
         </tr>`).join('')}
         <tr class="subtotaal">
-          <td><strong>Vaste prijs ${escHtml(phase.phaseName)}</strong></td>
+          <td><strong>Vastgestelde prijs ${escHtml(phase.phaseName)}</strong></td>
           <td class="uren"><strong>${phase.subtotalHoursFixed}</strong></td>
           <td class="bedrag"><strong>€ ${fmtNum(phase.subtotalPriceFixed)}</strong></td>
         </tr>
@@ -308,7 +308,7 @@ export function generateOfferteHtml(data: OfferteData): string {
         <tr>
           <th>Fase</th>
           <th class="uren">Uren</th>
-          <th class="bedrag">Vaste prijs</th>
+          <th class="bedrag">Vastgestelde prijs</th>
         </tr>
       </thead>
       <tbody>
@@ -327,7 +327,7 @@ export function generateOfferteHtml(data: OfferteData): string {
     </table>
 
     <div class="infobox">
-      <strong>Toelichting:</strong> Elke fase heeft een vaste prijs. U legt zich dus per fase vast en weet vooraf wat die fase kost, ook als het werk iets meer of minder uren kost dan geraamd. Alleen wijzigingen in de scope buiten de beschreven opleverpunten worden apart besproken. Na een kick-off gesprek en definitieve scope-afbakening worden de vaste prijzen bevestigd.
+      <strong>Toelichting:</strong> Elke fase heeft een vastgestelde prijs. U legt zich dus per fase vast en weet vooraf wat die fase kost, ook als het werk iets meer of minder uren kost dan geraamd. Alleen wijzigingen in de scope buiten de beschreven opleverpunten worden apart besproken. Na een kick-off gesprek en definitieve scope-afbakening worden de vastgestelde prijzen bevestigd.
     </div>
 
     <div class="genai-block">
@@ -408,7 +408,7 @@ export function generateOfferteHtml(data: OfferteData): string {
           <td class="bedrag">€ ${fmtNum(row.amount)}</td>
         </tr>`).join('')}
         <tr class="subtotaal">
-          <td colspan="2"><strong>Totaal (vaste prijzen alle fasen)</strong></td>
+          <td colspan="2"><strong>Totaal (vastgestelde prijzen alle fasen)</strong></td>
           <td class="bedrag"></td>
           <td class="bedrag"><strong>€ ${fmtNum(totalPriceFixed)}</strong></td>
         </tr>

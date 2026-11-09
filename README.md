@@ -1,20 +1,34 @@
-# Quote Tool — watsturen.nl
+# Quote Tool — Angular 22 + Firebase + Gemini Showcase
 
-Instant quote generator for web development projects.
+Instant quote generator for web and app development projects.
 Live at **[quote.watsturen.nl](https://quote.watsturen.nl)**
+
+---
+
+## Why this repository exists
+
+This repository has two goals:
+1. **Architecture reference for fellow developers:** A production example of how to combine modern **Angular 22** (standalone components, Signals, selective SSR, functional guards) with **Firebase** (App Hosting, Cloud Functions v2, Auth, Firestore, Storage, App Check) and **Google Gemini** without trusting the LLM with pricing or security decisions.
+2. **Ready to adapt for your own business:** All business details (company name, address, KvK, VAT, e-mail, offer prefix) are strictly separated from the source code via `functions/.env`, and the pricing rules live in a clean, deterministic TypeScript catalogue (`pricing.ts` & `pricing-features.ts`).
+
+### Architectural highlights
+
+- **Zoneless-ready Angular 22 with Signals:** State is driven by `signal()`, `computed()`, `effect()`, and `input()`. RxJS is only used at the boundary with asynchronous browser/Firebase APIs (`toObservable()` in the functional auth guard, `toSignal()` on reactive form controls).
+- **Zero-delay Auth & Deploy-safe Routing:** Firebase Auth starts reading the persisted session from `IndexedDB` at application boot (`provideEnvironmentInitializer`) while `withPreloading(PreloadAllModules)` preloads lazy route chunks in parallel. `withNavigationErrorHandler` (`chunk-error.ts`) automatically recovers with a single guarded page reload when a deploy renames lazy chunks while a user has a tab open.
+- **Deterministic Pricing, Schema-bound AI:** Gemini (`2.5 Flash` for pre-moderation, `2.5 Pro` for structured extraction) *never* invents prices. It only classifies project type, complexity, and feature IDs from a fixed enum schema. A pure TypeScript engine (`pricing.ts`) calculates the hours, phases, and payment schedule.
+- **Testable Pure Core (~150 fast unit tests):** Input cleaning, rate-limit decisions, prompt-injection fencing, model output sanitization, price calculation, HTML escaping, and retention rules are written as pure functions and tested with Vitest in under 4 seconds — without network, emulators, or live Gemini calls.
 
 ---
 
 ## What it does
 
-Describe a project by typing or pasting text, or upload a brief (PDF, Word or plain text), and get a detailed price estimate in seconds. Google Gemini extracts the project details and a fixed pricing engine turns them into a formatted Dutch-language quote document.
+Visitors describe a project by typing or pasting text, or by uploading a brief (PDF, Word, or plain text), and receive a detailed price estimate in seconds:
 
-**Flow:**
-1. Sign in (Google or email/password, email verification required)
-2. Type or paste a description of the project (the default), or upload a brief
-3. Get a fixed price per phase, an hour estimate, a payment schedule and a downloadable HTML quote. The owner and the client also receive it by e-mail
+1. **Sign in** (Google or e-mail/password; e-mail verification required, disposable e-mail addresses blocked).
+2. **Type or paste a project description** (default), or upload a brief.
+3. **Receive a fixed price per phase**, an hour breakdown, an AI-efficiency comparison, a 30%/70% phase payment schedule, and a printable/downloadable HTML quote (also sent via e-mail to both client and owner).
 
-The quote is a starting point for a conversation: the owner reads every brief before acting on it.
+The generated quote is a transparent starting point for a kick-off conversation: the owner reviews every brief before acting on it.
 
 ---
 
@@ -22,12 +36,12 @@ The quote is a starting point for a conversation: the owner reads every brief be
 
 | Layer | Technology |
 |---|---|
-| Frontend | Angular 22 (standalone components, signals, SSR) |
+| Frontend | Angular 22 (standalone components, signals, selective SSR) |
 | Backend | Firebase Cloud Functions v2 (Node 22, TypeScript 6) |
 | AI | Google Gemini via `@google/generative-ai`: **2.5 Flash** for moderation, **2.5 Pro** for extraction |
-| Auth | Firebase Authentication (Google + email/password) |
+| Auth | Firebase Authentication (Google + e-mail/password) |
 | Database | Firestore (`europe-west4`) |
-| File storage | Firebase Storage (`europe-west4`, signed URLs, 30-day expiry) |
+| File storage | Firebase Storage (`europe-west4`) |
 | Email | Resend API |
 | Security | Firebase App Check (reCAPTCHA Enterprise) |
 | Hosting | Firebase App Hosting |
@@ -37,16 +51,81 @@ The Cloud Functions run in `us-central1`, and Gemini and Resend may process data
 
 ---
 
-## Angular patterns used
+## Use it for your own business (Quickstart)
 
-- **Standalone components** only, no NgModules.
-- **Signals** for component state: `signal()`, `computed()`, `effect()`. RxJS only appears where Firebase or forms hand you an observable: `toObservable()` in the auth guard and `toSignal()` for the value of the text field.
-- **`OnPush`** change detection on every component.
-- **New control flow**: `@if`, `@for` instead of structural directives.
-- **Reactive Forms**: a `FormControl<string>` for the text field and `FormBuilder` groups for the auth forms.
-- **`inject()`** instead of constructor injection.
-- **SSR with selective rendering**: landing and auth pages are prerendered (static); the upload and result pages and the e-mail action page use server rendering (auth-gated or dynamic).
-- **Accessible form**: a real `<fieldset>` with native radio buttons for the choice between typing and uploading, labelled fields, a character counter that a screen reader only hears when something changes, and inline errors.
+You can run and deploy this tool under your own brand and pricing rules in five steps:
+
+### 1. Install dependencies
+
+```bash
+npm install
+cd functions && npm install && cd ..
+```
+
+### 2. Configure your business details (`functions/.env`)
+
+Offers and e-mails display your business details (company name, owner, address, contact details, KvK and VAT number, sender address, offer number prefix). None of these are hardcoded in the source — without `.env`, the code falls back to fictional example values (`Voorbeeld Webstudio`, `info@voorbeeld.example`).
+
+```bash
+cp functions/.env.example functions/.env
+```
+
+Edit `functions/.env` with your own details. `functions/.env` is git-ignored and automatically loaded by Firebase on `firebase deploy --only functions`.
+A predeploy safety script (`functions/check-company-env.cjs`) blocks deployment if `functions/.env` is missing, still contains example values, or if any of your real business details accidentally leaked into `functions/src`.
+
+### 3. Set API keys (Gemini & Resend)
+
+- **For local development (Firebase Emulator):** create `functions/.env.local` (git-ignored):
+  ```bash
+  GEMINI_API_KEY=your-gemini-api-key
+  RESEND_API_KEY=re_your-resend-api-key
+  ```
+- **For production (Google Secret Manager):**
+  ```bash
+  firebase functions:secrets:set GEMINI_API_KEY
+  firebase functions:secrets:set RESEND_API_KEY
+  ```
+
+### 4. Connect your Firebase project & App Check
+
+1. Replace the Firebase client configuration in `projects/quote-tool/src/environments/environment.ts` with your own Firebase project settings (these are public client identifiers; security is enforced by Firestore/Storage rules and App Check).
+2. Replace the reCAPTCHA Enterprise site key in `projects/quote-tool/src/app/core/services/firebase.service.ts` with your own key.
+
+### 5. Customize your hourly rate & feature catalogue (optional)
+
+- **Hourly rate & phase factors:** edit `HOURLY_RATE` (default `€65`), `AI_EFFICIENCY_FACTOR`, or `PHASE_DEPOSIT_PCT` in `functions/src/quote/pricing.ts`.
+- **Feature hours & base project types:** edit `BASE_HOURS` in `functions/src/quote/pricing.ts` and the feature catalogue in `functions/src/quote/pricing-features.ts`.
+
+### Running locally
+
+```bash
+# Start Angular dev server (http://localhost:4200)
+npx ng serve quote-tool
+
+# Start Firebase emulators (Functions, Firestore, Auth)
+firebase emulators:start
+
+# Run all unit tests
+npm test
+npm run test:functions
+```
+
+> Note: The daily retention clean-up (`retention.function.ts`) runs in dry-run mode by default and only logs what it would delete until you set `RETENTION_MODE=delete` in `functions/.env`.
+
+---
+
+## Angular 22 patterns demonstrated
+
+- **100% Standalone & `OnPush`:** Every component uses `standalone: true` and `ChangeDetectionStrategy.OnPush`.
+- **Signal-first state:** Component state uses `signal()`, `computed()`, `effect()`, and signal-based `input()`.
+- **Clean RxJS ↔ Signal interop:**
+  - `AuthService` wraps Firebase's `onAuthStateChanged` into signals (`user`, `loading`, `isAuthenticated`, `isEmailVerified`).
+  - `authGuard` (`core/guards/auth.guard.ts`) converts `auth.loading` via `toObservable()` so route activation waits for Firebase `IndexedDB` hydration before deciding whether to redirect.
+  - `UploadComponent` bridges its `FormControl<string>` to a signal via `toSignal()` to drive live word/character counters and validation computed signals.
+- **Fast auth redirect & chunk preloading (`app.config.ts`):** `provideEnvironmentInitializer` starts `AuthService` immediately on bootstrap, while `withPreloading(PreloadAllModules)` fetches lazy route chunks in the background so signed-in users transition to `/upload` without network delay.
+- **Deploy-resilient lazy loading (`core/chunk-error.ts`):** `withNavigationErrorHandler` detects missing chunk errors after a deployment and triggers a single full-page reload of the target URL, guarded by `sessionStorage` to prevent reload loops.
+- **Selective SSR (`app.routes.server.ts`):** Public static routes (`/` and `/auth`) are prerendered at build time (`RenderMode.Prerender`), while auth-gated or query-driven routes (`/upload`, `/result/:id`, `/auth/actie`) use `RenderMode.Server`.
+- **Accessible forms:** Native `<fieldset>` and radio buttons for switching between text input and file upload, proper labels, inline validation messages, and an `aria-live` character counter that only announces threshold changes to screen readers.
 
 ---
 
@@ -57,45 +136,46 @@ quote-tool/
 ├── projects/quote-tool/          # Angular 22 SSR app
 │   └── src/app/
 │       ├── features/
-│       │   ├── landing/          # Public landing page
-│       │   ├── auth/             # Sign in / sign up / email action
-│       │   ├── upload/           # Type-or-upload form, counters, progress UI
-│       │   │   └── brief-text.ts #   counting and checking of the typed text (mirrors the server)
-│       │   └── result/           # Quote result + download
+│       │   ├── landing/          # Public intro page (prerendered)
+│       │   ├── auth/             # Sign in, sign up, and e-mail action handler
+│       │   ├── upload/           # Text & file brief form, live counters, progress UI
+│       │   │   └── brief-text.ts # Client-side text cleaning & word counting (mirrors server)
+│       │   └── result/           # Quote summary + printable HTML offer
 │       ├── core/
-│       │   ├── guards/           # Auth guard (waits for Firebase state)
-│       │   └── services/         # Firebase, Auth, Quote services
+│       │   ├── chunk-error.ts    # Recovery from missing lazy chunks after a deploy
+│       │   ├── guards/           # Functional authGuard (waits for Firebase Auth state)
+│       │   └── services/         # Firebase, Auth, and Quote services
 │       └── shared/
-│           ├── icons/            # Self-contained SVG icon component
-│           ├── logo/             # Logo link component
-│           └── links.ts          # Link to the privacy statement
+│           ├── icons/            # Self-contained typed SVG icon component (<app-icon>)
+│           ├── logo/             # Brand logo link component
+│           └── links.ts          # External links
 └── functions/src/
     ├── quote/
-    │   ├── quote.function.ts       # Cloud Function entry point (the pipeline below)
+    │   ├── quote.function.ts       # Callable Cloud Function entry point (pipeline orchestrator)
     │   ├── brief-input.ts          # Request validation and text cleaning (pure functions)
-    │   ├── brief-source.ts         # Turns text or a file into one internal shape
-    │   ├── quote-limits.ts         # Per-user limits as a pure decision
-    │   ├── moderation.ts           # Pre-moderation of the whole brief, text or PDF (Gemini Flash)
-    │   ├── moderation-log.ts       # Log of blocked and flagged submissions (no text)
-    │   ├── prompt-fence.ts         # Marks visitor text as data inside a prompt
-    │   ├── extraction.ts           # Gemini structured extraction (Gemini Pro)
-    │   ├── sanitize-extracted.ts   # Validates what the model returned
-    │   ├── pricing.ts              # Fixed price per phase + AI-efficiency factor
-    │   ├── pricing-features.ts     # Feature catalogue (ids, hours, keyword fallback)
-    │   ├── gemini-retry.ts         # Retry/backoff and error classification for Gemini
-    │   ├── quote-generator.ts      # HTML quote document generator
-    │   ├── retention.ts            # What is deleted when (pure decisions)
-    │   └── retention.function.ts   # Scheduled daily clean-up
+    │   ├── brief-source.ts         # Normalizes typed text or uploaded file into BriefSource
+    │   ├── quote-limits.ts         # Per-user rate limit evaluation (pure functions)
+    │   ├── moderation.ts           # Pre-moderation of text and full PDFs (Gemini 2.5 Flash)
+    │   ├── moderation-log.ts       # Audit log of blocked/flagged submissions (never stores brief text)
+    │   ├── prompt-fence.ts         # Hash-fenced XML tags to isolate untrusted user text
+    │   ├── extraction.ts           # Schema-enforced project extraction (Gemini 2.5 Pro)
+    │   ├── sanitize-extracted.ts   # Validates and strips unsafe patterns from model output
+    │   ├── pricing.ts              # Deterministic phase pricing engine + AI-efficiency factor
+    │   ├── pricing-features.ts     # Feature catalogue (~30 enum IDs, hours, keyword fallback)
+    │   ├── gemini-retry.ts         # Exponential backoff retry & error classification for Gemini
+    │   ├── quote-generator.ts      # Escaped HTML quote document generator
+    │   ├── retention.ts            # 12-month GDPR retention rules (pure functions)
+    │   └── retention.function.ts   # Scheduled daily clean-up job
     ├── contact/
-    │   └── contact.function.ts     # Contact form Cloud Function
+    │   └── contact.function.ts     # Contact form HTTPS Cloud Function
     └── shared/
-        ├── brand-colors.ts         # Palette for e-mails and the HTML offer
-        ├── company.ts              # Business details, read from functions/.env
-        ├── disposable-email.ts     # Blocklist of disposable e-mail services
-        └── email.service.ts        # Resend email service (lazy init)
+        ├── brand-colors.ts         # Shared color palette for e-mails and HTML offers
+        ├── company.ts              # Reads business details from functions/.env with safe fallbacks
+        ├── disposable-email.ts     # Blocklist of disposable e-mail providers
+        └── email.service.ts        # Resend wrapper with lazy initialization
 ```
 
-Every `*.spec.ts` sits next to the file it tests.
+Every `*.spec.ts` file is co-located next to the source file it tests.
 
 ---
 
@@ -239,75 +319,23 @@ Never the text of a visitor, a file name or an error object (a JSON error quotes
 ## Testing
 
 ```bash
-npm test                # Angular app (the counting and checking of the typed text, the app shell)
+npm test                # Angular app: 20 tests (brief text validation, chunk-error recovery, app shell)
 npm run test:functions  # Cloud Functions: ~130 tests, no network and no Gemini calls
 ```
 
 The functions tests cover the pure logic: request validation, text cleaning, limits, prompt building, moderation parsing (text and PDF), output validation, retention rules, and that the HTML offer escapes every field.
 
-Not covered by tests: the Firestore transaction, Storage, Auth, and the real Gemini calls. The pipeline was run against real briefs with a script that is not part of this repository.
+Not covered by unit tests: the Firestore transaction, Storage, Auth, and live Gemini calls. The pipeline is validated against a suite of real briefs (`tmp/offertes`) before pricing or extraction changes go live.
 
 ---
-
-## Local development
-
-```bash
-# Install dependencies
-npm install
-cd functions && npm install && cd ..
-
-# Start Angular dev server
-ng serve quote-tool
-
-# Start Firebase emulators (Functions + Firestore + Auth)
-firebase emulators:start
-
-# Tests
-npm test
-npm run test:functions
-```
-
-> **Note:** You need your own Firebase project and API keys to run this locally.
-
-> The scheduled clean-up only logs what it would delete until you set `RETENTION_MODE=delete` in `functions/.env`.
-
-### Your own business details
-
-Offers and e-mails show your business details (name, address, contact details, KvK and VAT number,
-sender address). These are **not** in the source code: the code contains fictional example details
-only (`Voorbeeld Webstudio`, `info@voorbeeld.example`).
-
-```bash
-cp functions/.env.example functions/.env   # then fill in your own details
-```
-
-Firebase loads `functions/.env` when you deploy (`firebase deploy --only functions`) and exposes the
-values as `process.env`; `functions/.env` is ignored by git. A check that runs before every deploy
-(`functions/check-company-env.cjs`) stops the deploy when `functions/.env` is missing, still contains
-the example details, or when one of your real details ends up in the source code. The code that reads
-the details is `functions/src/shared/company.ts`.
-> Copy `projects/quote-tool/src/environments/environment.ts` and replace the values with your own Firebase config.
-
----
-
 
 ## How this was built
 
-This project was developed with AI-assisted coding using [Cline](https://github.com/cline/cline), an open-source AI coding agent, paired with various large language models (initially Claude Sonnet 4.5, later others).
+Designed and built by **Dirk van der Giesen** ([watsturen.nl](https://watsturen.nl)) — Solutions Architect (Full-Cycle).
 
-**What the AI does:**
-- Generates code following project conventions and Angular best practices
-- Handles refactoring (e.g., migrating `firebase-admin` v13 → v14, Angular 21 → 22)
-- Plans and executes dependency upgrades with compatibility checks
-- Writes and maintains documentation
-
-**What the human does:**
-- Architecture decisions and product direction
-- Code review before every commit
-- Deployment, domain configuration, Firebase console setup
-- Client communication and business logic validation
-
-The codebase is the result of iterative collaboration — the AI handles the implementation details while the human guides the architecture and validates the output.
+The codebase is structured so that human architecture and AI-assisted implementation ([Cline](https://github.com/cline/cline)) reinforce each other:
+- **Architecture, security boundaries & domain rules by the architect:** Strict separation between pure business logic (`brief-input.ts`, `quote-limits.ts`, `pricing.ts`, `sanitize-extracted.ts`, `retention.ts`) and side-effecting I/O (`quote.function.ts`), deterministic pricing outside the LLM, hash-fenced prompts, and predeploy privacy checks (`check-company-env.cjs`).
+- **Accelerated implementation under fixed rules:** AI tooling is used within strict project conventions (standalone Angular 22, Signals, zero `any`, co-located Vitest unit tests), reviewed and verified before every commit.
 
 ---
 

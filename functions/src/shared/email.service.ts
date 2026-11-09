@@ -170,7 +170,7 @@ export async function sendQuoteNotification(payload: QuoteEmailPayload): Promise
             <td style="padding: 8px 0;">${hoursFixed} <span style="color: ${BRAND.subtle}; font-size: 12px;">(${internalRange})</span></td>
           </tr>
           <tr>
-            <td style="padding: 8px 0; font-weight: bold;">Vaste prijs (totaal)</td>
+            <td style="padding: 8px 0; font-weight: bold;">Vastgestelde prijs (totaal)</td>
             <td style="padding: 8px 0; font-size: 18px; font-weight: bold; color: ${BRAND.teal};">${priceFixed}</td>
           </tr>
         </table>
@@ -244,11 +244,11 @@ export async function sendQuoteConfirmation(payload: QuoteEmailPayload): Promise
         <div style="background: ${BRAND.cream}; border-radius: 8px; padding: 16px 20px; margin: 20px 0; border-left: 3px solid ${BRAND.teal};">
           <p style="margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: ${BRAND.subtle};">Project</p>
           <p style="margin: 0 0 12px; font-size: 16px; font-weight: 600;">${escapeHtml(payload.projectTitle)}</p>
-          <p style="margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: ${BRAND.subtle};">Voorgestelde vaste prijs (excl. BTW, verdeeld over fases)</p>
+          <p style="margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: ${BRAND.subtle};">Voorgestelde vastgestelde prijs (excl. BTW, verdeeld over fases)</p>
           <p style="margin: 0; font-size: 20px; font-weight: 700; color: ${BRAND.teal};">${priceFixed}</p>
         </div>
         <p style="margin: 0 0 20px; font-size: 14px; color: ${BRAND.muted};">
-          Dit is een GenAI-gegenereerd voorstel op basis van je brief, met een vaste prijs per fase. De definitieve prijzen worden bevestigd na een kick-off gesprek over de exacte scope.
+          Dit is een GenAI-gegenereerd voorstel op basis van je brief, met een vastgestelde prijs per fase. De definitieve prijzen worden bevestigd na een kick-off gesprek over de exacte scope.
         </p>
         <div style="text-align: center; margin: 24px 0;">
           <a href="${payload.offerteSignedUrl}"

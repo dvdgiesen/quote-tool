@@ -43,7 +43,7 @@ import { LogoLinkComponent } from '../../shared/logo/logo-link.component';
                   {{ formatPrice(quote()!.priceFixed) }}
                 </div>
                 <div class="result__hours">
-                  vaste prijs, verdeeld over fases · {{ quote()!.hoursFixed }} uur · €{{ quote()!.hourlyRate }}/uur
+                  vastgestelde prijs, verdeeld over fases · {{ quote()!.hoursFixed }} uur · €{{ quote()!.hourlyRate }}/uur
                 </div>
               </div>
             </div>
@@ -68,7 +68,7 @@ import { LogoLinkComponent } from '../../shared/logo/logo-link.component';
             </span>
             <p>
               <strong>Dit is een GenAI-gegenereerd voorstel.</strong>
-              Per fase wordt een vaste prijs voorgesteld. Definitieve prijsafspraken worden gemaakt na een kick-off gesprek over de exacte scope.
+              Per fase wordt een vastgestelde prijs voorgesteld. Definitieve prijsafspraken worden gemaakt na een kick-off gesprek over de exacte scope.
             </p>
           </div>
 
